@@ -1,5 +1,7 @@
+import html
 import re
 import time
+from statistics import pstdev
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
@@ -52,16 +54,26 @@ def _sent(txt: str, n: int = 1, mx: int = 520) -> str:
     return t
 
 
-def _snippet(h: Dict[str, Any], q: str = "", mx: int = 280) -> str:
-    txt = (h or {}).get("text") or (h or {}).get("tx") or ""
-    t = _sent(txt, n=1, mx=mx)
-    if not q:
-        return t
-    terms = [re.escape(w) for w in re.findall(r"[A-Za-z0-9]{3,}", q)]
+def _snippet(h: Dict[str, Any], q: str = "", mx: int = 240) -> str:
+    return _sent((h or {}).get("text") or (h or {}).get("tx") or "", n=1, mx=mx)
+
+
+def _highlight_snippet(snippet: str, q: str = "") -> str:
+    if not snippet:
+        return ""
+    terms = [re.escape(w) for w in re.findall(r"[A-Za-z0-9]{3,}", q or "")]
     if not terms:
-        return t
+        return html.escape(snippet)
     pat = re.compile("(" + "|".join(terms) + ")", flags=re.I)
-    return pat.sub(r"**\\1**", t)
+    return pat.sub(
+        lambda m: f'<span class="hit-term">{html.escape(m.group(0))}</span>',
+        html.escape(snippet),
+    )
+
+
+def _snippet_html(h: Dict[str, Any], q: str = "", mx: int = 240) -> str:
+    base = _snippet(h, q="", mx=mx)
+    return _highlight_snippet(base, q=q)
 
 
 def _titleize_slug(s: str) -> str:
@@ -199,53 +211,135 @@ def _rank_key(h: Dict[str, Any]) -> float:
     return _j01(h)
 
 
+def _clamp_answer(ans: str, max_sents: int = 5) -> Dict[str, Any]:
+    sents = _split_sents(ans)
+    if not sents:
+        return {"text": "", "truncated": False}
+    limited = " ".join(sents[:max_sents])
+    return {"text": limited, "truncated": len(sents) > max_sents}
+
+
+def _stitch_hits_preview(hits: List[Dict[str, Any]], mx_hits: int = 3) -> str:
+    if not hits:
+        return ""
+    parts = []
+    for h in hits[:mx_hits]:
+        sn = _snippet(h, mx=200)
+        if sn:
+            parts.append(sn)
+    return " / ".join(parts)
+
+
+def _judge_stats(hs: List[Dict[str, Any]], topn: int = 8) -> Dict[str, float]:
+    vals = []
+    for h in hs[:topn]:
+        try:
+            vals.append(float(h.get("judge01", 0.0)))
+        except Exception:
+            continue
+    if not vals:
+        return {"mx": 0.0, "mn": 0.0, "std": 0.0, "uc": 0, "cnt": 0}
+    mx = max(vals)
+    mn = min(vals)
+    std = pstdev(vals) if len(vals) > 1 else 0.0
+    uc = len([v for v in vals if v >= 0.60])
+    return {"mx": mx, "mn": mn, "std": std, "uc": uc, "cnt": len(vals)}
+
+
+def _confidence_state(cov: str, conf: Optional[float], stats: Dict[str, float]) -> str:
+    cov = (cov or "WEAK").upper()
+    c = conf if conf is not None else 0.0
+    try:
+        c = max(0.0, min(1.0, float(c)))
+    except Exception:
+        c = 0.0
+    mx = stats.get("mx", 0.0)
+    uc = stats.get("uc", 0)
+    std = stats.get("std", 0.0)
+    if cov in ("HIGH", "DISTRIBUTED") and c >= 0.7 and mx >= 0.8 and uc >= 2 and std <= 0.15:
+        return "HIGH"
+    if c >= 0.4 and mx >= 0.55:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _coverage_counts(hits: List[Dict[str, Any]], meta: Dict[str, Any]) -> Dict[str, Any]:
+    nmeta = (meta or {}).get("n", {}) if isinstance(meta, dict) else {}
+    books = nmeta.get("uniq_books")
+    secs = nmeta.get("uniq_sections")
+    book_ids = [h.get("book") or h.get("book_title") or h.get("book_title_pretty") for h in hits]
+    pub_ids = [h.get("publisher") or h.get("pub") or h.get("corp") for h in hits]
+    if books is None or (books == 0 and hits):
+        books = len({b for b in book_ids if b})
+    if secs is None or (secs == 0 and hits):
+        secs = len(
+            {
+                (book_ids[i], hits[i].get("sec") or hits[i].get("section"))
+                for i in range(len(hits))
+                if book_ids[i] or hits[i].get("sec") or hits[i].get("section")
+            }
+        )
+    uniq_books = max(books or 0, 0)
+    uniq_pubs = len({p for p in pub_ids if p})
+    has_sources = bool(hits) or uniq_books > 0 or uniq_pubs > 0
+    return {
+        "books": uniq_books,
+        "sections": max(secs or 0, 0),
+        "publishers": uniq_pubs,
+        "single_source": has_sources and (uniq_books <= 1 or uniq_pubs <= 1),
+    }
+
+
 def render_answer(rr: Dict[str, Any]):
     ans = (rr or {}).get("answer") or ""
     with st.container(border=True):
         st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
         st.subheader("Answer")
         if ans:
-            sents = _split_sents(ans)
-            limited = " ".join(sents[:5]) if sents else ans
-            st.write(limited)
-            if len(sents) > 5:
-                st.caption("Clamped to 5 sentences for readability.")
+            c = _clamp_answer(ans, max_sents=5)
+            st.write(c["text"])
+            if c["truncated"]:
+                st.caption("Truncated to 5 sentences for readability.")
         else:
             hits = (rr or {}).get("hits") or []
             if hits:
-                st.caption("No LLM answer. Evidence-first preview:")
-                st.write(_snippet(hits[0], q=""))
+                st.caption("No LLM answer. Evidence-first preview (stitched):")
+                st.write(_stitch_hits_preview(hits))
             else:
                 st.caption("No answer.")
 
 
 def render_conf(rr: Dict[str, Any]):
-    cf = (rr or {}).get("confidence")
-    if cf is None:
-        return
-    try:
-        v = float(cf)
-    except Exception:
-        return
-    v = max(0.0, min(1.0, v))
-    cov = (rr or {}).get("coverage") or "WEAK"
     meta = (rr or {}).get("meta") or {}
-    n = meta.get("n", {})
-    books = n.get("uniq_books", 0)
-    secs = n.get("uniq_sections", 0)
-    state = "Low" if v < 0.35 else "Medium" if v < 0.65 else "High"
+    cf = (rr or {}).get("confidence", meta.get("conf"))
+    coverage = (rr or {}).get("coverage") or meta.get("coverage") or "WEAK"
+    hits = list((rr or {}).get("hits") or [])
+    stats = _judge_stats(hits)
+    state = _confidence_state(coverage, cf, stats)
+
+    tooltip = (
+        f"coverage={coverage} • conf={cf if cf is not None else 0.0:.2f} • "
+        f"judge mx={stats.get('mx', 0.0):.2f} • std={stats.get('std', 0.0):.2f} • uc={stats.get('uc', 0)}"
+    )
+    badge_colors = {
+        "LOW": ("#fee2e2", "#b91c1c"),
+        "MEDIUM": ("#fef9c3", "#92400e"),
+        "HIGH": ("#dcfce7", "#065f46"),
+    }
+    bg, fg = badge_colors.get(state, ("#e5e7eb", "#111827"))
+    badge_html = f'<span title="{html.escape(tooltip)}" style="padding:4px 10px;border-radius:14px;font-weight:700;background:{bg};color:{fg};border:1px solid #d1d5db;display:inline-block;">{state}</span>'
+
     st.caption("Confidence")
-    c1, c2 = st.columns([0.65, 0.35])
+    c1, c2 = st.columns([0.55, 0.45])
     with c1:
-        try:
-            st.progress(v, text=f"{state} • coverage {cov}")
-        except Exception:
-            st.progress(v)
-            st.caption(f"{state} • coverage {cov}")
+        st.markdown(badge_html, unsafe_allow_html=True)
+        st.caption(f"Coverage: {coverage}")
     with c2:
-        st.caption(f"Books: {books} | Sections: {secs}")
-        if books <= 1:
+        counts = _coverage_counts(hits, meta)
+        st.caption(f"Books: {counts['books']} | Sections: {counts['sections']}")
+        if counts["single_source"]:
             st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
+    st.caption("State derived from coverage, judge spread (mx/std/uc), and confidence score.")
 
 
 def render_context_panel():
@@ -328,7 +422,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
 
         if near_miss:
             st.caption("Near-miss candidate (no direct evidence).")
-        st.markdown(_snippet(h, q=q, mx=260))
+        st.markdown(_snippet_html(h, q=q, mx=240), unsafe_allow_html=True)
 
         b1, b2, b3 = st.columns(3)
         with b1:

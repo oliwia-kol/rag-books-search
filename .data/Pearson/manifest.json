@@ -1,0 +1,20 @@
+{
+  "built_at": "2025-12-18T08:02:11.466201",
+  "src": "Pearson",
+  "cfg": {
+    "emb_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "chunk_size": 900,
+    "chunk_overlap": 160,
+    "min_chunk_chars": 120,
+    "ckpt_every": 1200,
+    "commit_every": 50,
+    "self_eval_n": 80,
+    "max_pages_pdf": null,
+    "max_docs_epub": null
+  },
+  "cfg_fp": "09d595037251c06636d40b759044b23c5befdaae",
+  "files": 17,
+  "added_new_chunks_this_run": 17696,
+  "index_ntotal": 17696,
+  "errors_this_run": 0
+}

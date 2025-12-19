@@ -8,6 +8,8 @@ Goal: catch app/ui API drift in ~1s.
 
 import importlib
 
+from rag_engine import RET_KEYS, STAGES
+
 
 def _has(m, ns):
     miss = [n for n in ns if not hasattr(m, n)]
@@ -16,14 +18,77 @@ def _has(m, ns):
 
 
 def main():
-    app = importlib.import_module("app")
     us = importlib.import_module("ui_shell")
     ua = importlib.import_module("ui_adapter")
     ut = importlib.import_module("ui_theme")
+    re_mod = importlib.import_module("rag_engine")
 
     _has(us, ["init_state", "sidebar", "global_error_box", "toast_flush", "qp_get", "qp_set", "cb_clear"])
     _has(ua, ["render_answer", "render_conf", "render_context_panel", "render_evidence_list"])
     _has(ut, ["apply_theme"])
+    _has(re_mod, ["_mk_eng", "run_query", "Eng"])
+
+    # minimal engine contract: should not crash when empty
+    eng = re_mod.Eng(emb=None, ix={}, dbp={}, corp={})
+    _ = re_mod.run_query(eng, "smoke test")
+
+    # minimal hit schema contract (field names must stay stable)
+    sample_hit = {
+        "corp": "OReilly",
+        "fp": "book/ch01",
+        "sec": "Intro",
+        "tx": "hello world",
+        "cid": "cid-1",
+        "cidx": 1,
+        "score": 0.5,
+    }
+    hits, _ = re_mod._jdg_rerank("q", [sample_hit])
+    required = {"corp", "fp", "sec", "tx", "cid", "cidx", "score"}
+    missing = [k for k in required if k not in hits[0]]
+    if missing:
+        raise AssertionError(f"hit schema missing keys: {missing}")
+
+    # run_query contract: required keys always present
+    rq = re_mod.run_query(eng, "smoke test")
+    for k in ["ok", "no_evidence", "hits", "near_miss", "coverage"]:
+        if k not in rq:
+            raise AssertionError(f"run_query missing key: {k}")
+    for k in RET_KEYS:
+        if k not in rq:
+            raise AssertionError(f"run_query missing contract key: {k}")
+    for st in STAGES:
+        if st not in rq["meta"]["t"]:
+            raise AssertionError(f"meta.t missing stage: {st}")
+
+    # forced exception path
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    orig_hybrid = re_mod.hybrid_retrieve
+    re_mod.hybrid_retrieve = boom
+    eng_err = re_mod.Eng(emb=None, ix={}, dbp={"c": None}, corp={"c": None})
+    rq_err = re_mod.run_query(eng_err, "smoke test")
+    re_mod.hybrid_retrieve = orig_hybrid
+    if rq_err["ok"] is not False or rq_err["no_evidence"] is not True:
+        raise AssertionError("error path should set ok=False, no_evidence=True")
+    if not rq_err.get("meta", {}).get("err"):
+        raise AssertionError("error path should populate meta.err")
+
+    # no direct evidence path
+    def fake_retrieve(e, q, pubs=None, qv=None):
+        return [{"cid": "c", "fp": "f", "sec": "s", "tx": "t", "cidx": 0, "score": 0.5}], {"dense_hits": 0, "lex_hits": 1, "cands": 1, "pubs_used": 1, "t_dense": 0.0, "t_lex": 0.0}
+
+    orig_retrieve = re_mod.hybrid_retrieve
+    re_mod.hybrid_retrieve = fake_retrieve
+    eng_nd = re_mod.Eng(emb=None, ix={}, dbp={"c": None}, corp={"c": None})
+    rq_nd = re_mod.run_query(eng_nd, "smoke test")
+    re_mod.hybrid_retrieve = orig_retrieve
+    if rq_nd["ok"] is not True or rq_nd["no_evidence"] is not True:
+        raise AssertionError("no-direct-evidence path should be ok=True, no_evidence=True")
+    if not rq_nd["hits"]:
+        raise AssertionError("hits should contain display-filtered results even when no direct evidence")
+    if any("_tok" in h or "_jdg" in h for h in rq_nd["hits"]):
+        raise AssertionError("sanitization failed: internal keys leaked")
 
     print("OK: UI contract satisfied")
 

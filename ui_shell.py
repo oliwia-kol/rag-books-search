@@ -109,6 +109,18 @@ def sidebar(eng=None, startup_report=None):
         st.caption("Judge")
         st.checkbox("USE_JDG (rerank)", value=True, disabled=True, help="Forced ON", key="_use_jdg_view")
 
+        if eng is not None:
+            st.caption("Startup status")
+            try:
+                rep = getattr(eng, "corp_status", {}) or {}
+                for name, r in rep.items():
+                    ok = r.get("loaded") and r.get("dim_ok")
+                    lbl = "loaded" if ok else "failed"
+                    reason = ", ".join(r.get("reasons", []) or [])
+                    st.write(f"{name}: {lbl}" + (f" ({reason})" if reason else ""))
+            except Exception:
+                st.write("status unavailable")
+
         if ss.get("adv"):
             st.caption("Sort")
             ss["srt"] = st.selectbox("", ["Best evidence", "Semantic"], index=0, label_visibility="collapsed")

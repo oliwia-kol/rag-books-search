@@ -19,7 +19,15 @@ Logika: `rag_engine.py`
 
 ---
 
-## Struktura danych (wymagana)
+## CPU-only i ograniczenia
+
+- brak wsparcia dla GPU/CUDA (pipeline i runtime muszą działać na CPU),
+- embeddingi normalizowane (IndexFlatIP) – przy zmianie modelu zachowaj spójny wymiar,
+- limity: domyślnie 10 wyników finalnych, kontekst LLM ~1400 znaków, prompt clamp ~2000 znaków.
+
+## Wydawcy i struktura danych (wymagana)
+
+Obsługiwani wydawcy (domyślni): **OReilly**, **Manning**, **Pearson**. Możesz dodać kolejnych, jeżeli zachowasz layout:
 
 ```
 data/

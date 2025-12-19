@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -23,6 +23,7 @@ from sentence_transformers import CrossEncoder
 logger = logging.getLogger(__name__)
 
 
+# -----------------------------
 # -----------------------------
 # Paths (repo-local)
 # -----------------------------
@@ -70,6 +71,7 @@ def chk(p: Path) -> Dict[str, Any]:
 
 
 # -----------------------------
+# -----------------------------
 # Retrieval + judge config
 # -----------------------------
 HCFG = {
@@ -81,6 +83,11 @@ HCFG = {
     "min_faiss_score": 0.18,
     "dense_k": 30,
     "lex_k": 30,
+    "fusion_dense_w": 0.65,
+    "fusion_lex_w": 0.35,
+    "max_snippet_chars": 850,
+    "max_ctx_chars": 1400,
+    "max_prompt_chars": 2000,
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -177,6 +184,7 @@ class Eng:
     corp: Dict[str, Path]
     ix_dim: Dict[str, int]
     corp_report: Dict[str, Dict[str, Any]]
+    corp_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/all-MiniLM-L6-v2") -> Eng:
@@ -199,29 +207,79 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
     dbp: Dict[str, Path] = {}
     loaded: Dict[str, Path] = {}
     dims: Dict[str, int] = {}
+    status: Dict[str, Dict[str, Any]] = {}
 
-    for k, p in ready.items():
+    for k, p in c2p.items():
         ok_dense = False
         dim_ok = True
-        try:
-            rd = faiss.read_index(str(p / "index.faiss"))
-            dims[k] = int(rd.d)
-            if emb_dim is not None and dims[k] != emb_dim:
+        failure_reason = None
+        rep = reports.get(k, {})
+        rep.setdefault("dense_loaded", False)
+        rep.setdefault("db_loaded", False)
+        rep.setdefault("dim_ok", False)
+        rep.setdefault("embed_dim", emb_dim)
+        rep.setdefault("ix_dim", None)
+        rep.setdefault("failure_reason", None)
+
+        if k in ready:
+            try:
+                rd = faiss.read_index(str(p / "index.faiss"))
+                dims[k] = int(rd.d)
+                rep["ix_dim"] = dims.get(k)
+                if emb_dim is not None and dims[k] != emb_dim:
+                    dim_ok = False
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {dims[k]}"
+                else:
+                    ix[k] = rd
+                    ok_dense = True
+            except Exception as e:
                 dim_ok = False
-            else:
-                ix[k] = rd
-                ok_dense = True
-        except Exception:
-            dim_ok = False
-            pass
+                failure_reason = f"index load error: {type(e).__name__}"
 
-        db_path = p / "meta.sqlite"
-        db_exists = db_path.exists()
-        if db_exists:
-            dbp[k] = db_path
+            db_path = p / "meta.sqlite"
+            db_exists = db_path.exists()
+            if db_exists:
+                dbp[k] = db_path
 
-        if ok_dense or db_exists:
-            loaded[k] = p
+            if ok_dense or db_exists:
+                loaded[k] = p
+
+            rep["dense_loaded"] = ok_dense
+            rep["db_loaded"] = db_exists
+            rep["dim_ok"] = dim_ok
+            rep["embed_dim"] = emb_dim
+
+        # annotate failure_reason for non-ready corpora
+        ready_condition = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        if ready_condition:
+            rep["failure_reason"] = None
+        else:
+            if not rep.get("exists"):
+                failure_reason = "corpus folder missing"
+            elif rep.get("missing"):
+                failure_reason = f"missing: {', '.join(rep['missing'])}"
+            elif failure_reason is None and (not rep.get("dense_loaded") or not rep.get("dim_ok")):
+                if rep.get("ix_dim") and emb_dim and rep.get("ix_dim") != emb_dim:
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {rep.get('ix_dim')}"
+                elif failure_reason is None:
+                    failure_reason = "dense index unavailable"
+            elif failure_reason is None and not rep.get("db_loaded"):
+                failure_reason = "metadata db unavailable"
+            rep["failure_reason"] = failure_reason
+
+        reports[k] = rep
+
+    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
 
         # enrich report
         rep = reports.get(k, {})
@@ -234,7 +292,39 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
             rep.setdefault("reasons", []).append("embed_dim_mismatch")
         reports[k] = rep
 
-    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports)
+def get_startup_report(e: Eng) -> Dict[str, Any]:
+    return {
+        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
+        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
+        "corp": getattr(e, "corp_status", {}),
+    }
+
+
+def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
+    rows = []
+    for pub in CORP.keys():
+        rep = eng.corp_report.get(pub, {})
+        ready = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        rows.append(
+            {
+                "publisher": pub,
+                "loaded_dense": bool(rep.get("dense_loaded")),
+                "loaded_db": bool(rep.get("db_loaded")),
+                "ready": bool(ready),
+                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
+            }
+        )
+    return rows
 
 
 def _db(con_p: Path) -> sqlite3.Connection:
@@ -323,6 +413,7 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             if not row:
                 continue
             cid, fp, sec, cidx, tx, _ = row
+            tx = (tx or "")[: HCFG["max_snippet_chars"]]
             out.append(
                 {
                     "corp": corp,
@@ -488,7 +579,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             ls = float(b.get("lex_score_n", 0.0))
             row["sem_score_n"] = ss
             row["lex_score_n"] = ls
-            row["score"] = 0.65 * ss + 0.35 * ls
+            row["score"] = HCFG["fusion_dense_w"] * ss + HCFG["fusion_lex_w"] * ls
             cands.append(row)
 
     cands.sort(key=lambda z: float(z.get("score", 0.0)), reverse=True)
@@ -851,27 +942,39 @@ def llm_call(prompt: str, cfg: Optional[dict] = None) -> str:
 
 def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
     """Fetch context window for reading mode."""
-    for corp, dbp in getattr(e, "dbp", {}).items():
-        try:
-            con = _db(dbp)
-            cur = con.cursor()
-            rows = cur.execute(
-                """
-                SELECT cid, fp, sec, cidx, tx FROM chunks
-                WHERE fp=? AND cidx BETWEEN ? AND ?
-                ORDER BY cidx
-                """,
-                (fp, int(cidx) - int(window), int(cidx) + int(window)),
-            ).fetchall()
-            con.close()
-            if rows:
-                return [
-                    {"cid": r[0], "fp": r[1], "sec": r[2], "cidx": int(r[3]), "tx": r[4], "corp": corp}
-                    for r in rows
-                ]
-        except Exception:
-            continue
-    return []
+    try:
+        chunks = []
+        for corp, dbp in getattr(e, "dbp", {}).items():
+            try:
+                con = _db(dbp)
+                cur = con.cursor()
+                rows = cur.execute(
+                    """
+                    SELECT cid, fp, sec, cidx, tx FROM chunks
+                    WHERE fp=? AND cidx BETWEEN ? AND ?
+                    ORDER BY cidx
+                    """,
+                    (fp, int(cidx) - int(window), int(cidx) + int(window)),
+                ).fetchall()
+                con.close()
+                if rows:
+                    chunks = [
+                        {
+                            "cid": r[0],
+                            "fp": r[1],
+                            "sec": r[2],
+                            "cidx": int(r[3]),
+                            "tx": (r[4] or "")[: HCFG["max_snippet_chars"]],
+                            "corp": corp,
+                        }
+                        for r in rows
+                    ]
+                    break
+            except Exception:
+                continue
+        return {"ok": bool(chunks), "chunks": chunks, "err": None if chunks else "not_found"}
+    except Exception as ex:
+        return {"ok": False, "chunks": [], "err": _safe_msg(ex)}
 
 
 def _log_event(meta, mode, pubs, qlen):
@@ -1008,9 +1111,10 @@ def run_query(
 
         # cutoff
         t_cut = _t0()
-        hs2, _ = _cut(hs, k=K_SHOW, mnk=MNK)
+        hs2, cut_meta = _cut(hs, k=K_SHOW, mnk=MNK)
         meta["t"]["cut"] = _dt(t_cut)
         meta["n"]["after_cut"] = len(hs2)
+        meta["cut_rule"] = cut_meta.get("rule")
 
         if not use_jdg_flag:
             for h in hs2:

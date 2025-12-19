@@ -323,11 +323,12 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
         if meta:
             st.caption(meta)
 
-        # small quality line
-        st.caption(f"judge01 {j:.2f} | score {_score(h):.2f}")
-
         if near_miss:
-            st.caption("Near-miss candidate (no direct evidence).")
+            ov = (h or {}).get("overlap_count")
+            st.caption(f"Near miss • overlap {ov if ov is not None else 0} • judge01 {j:.2f}")
+        else:
+            # small quality line
+            st.caption(f"judge01 {j:.2f} | score {_score(h):.2f}")
         st.markdown(_snippet(h, q=q, mx=260))
 
         b1, b2, b3 = st.columns(3)
@@ -360,6 +361,9 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
             ov = (h or {}).get("overlap")
             if ov is not None:
                 st.write(f"overlap: {ov}")
+            ov_count = (h or {}).get("overlap_count")
+            if ov_count is not None and ov_count != ov:
+                st.write(f"overlap_count: {ov_count}")
             st.write(f"judge01: {j:.3f}")
             st.write(f"score: {_score(h):.3f}")
 
@@ -371,10 +375,9 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
     if not nm:
         return
     nm = nm[:6]
-    st.subheader("Near-miss evidence (no direct hit)")
+    st.subheader("Near misses")
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
-    st.caption(
-        f"Showing {len(nm)} candidates • threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
-    )
+    st.caption(meta_nm.get("explanation") or "Close but missing key terms/judge threshold.")
+    st.caption(f"Showing {len(nm)} candidates • threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}")
     for i, h in enumerate(nm):
         render_card(h, q, i, near_miss=True)

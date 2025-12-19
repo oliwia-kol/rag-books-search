@@ -78,6 +78,7 @@ NM_MIN = 0.28
 NM_MAX = 6
 SQLITE_TEXT_MAX = 4000
 FAISS_FALLBACK_RETRY_MAX = 8
+NEAR_MISS_EXPLANATION = "Close but missing key terms/judge threshold"
 
 HCFG = {
     "faiss_fetch_k": 60,
@@ -294,51 +295,6 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
         reports[k] = rep
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
-
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        if not dim_ok:
-            rep.setdefault("reasons", []).append("embed_dim_mismatch")
-        reports[k] = rep
-
-def get_startup_report(e: Eng) -> Dict[str, Any]:
-    return {
-        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
-        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
-        "corp": getattr(e, "corp_status", {}),
-    }
-
-
-def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
-    rows = []
-    for pub in CORP.keys():
-        rep = eng.corp_report.get(pub, {})
-        ready = all(
-            [
-                rep.get("exists"),
-                rep.get("faiss"),
-                rep.get("db"),
-                rep.get("manifest"),
-                rep.get("dense_loaded"),
-                rep.get("db_loaded"),
-                rep.get("dim_ok"),
-            ]
-        )
-        rows.append(
-            {
-                "publisher": pub,
-                "loaded_dense": bool(rep.get("dense_loaded")),
-                "loaded_db": bool(rep.get("db_loaded")),
-                "ready": bool(ready),
-                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
-            }
-        )
-    return rows
 
 
 def _db(con_p: Path) -> sqlite3.Connection:
@@ -865,6 +821,7 @@ def _near_miss(hs, q, qs=None, use_jdg=USE_JDG_DEFAULT):
         if not ok:
             continue
         h["overlap"] = ov_meta.get("overlap", 0)
+        h["overlap_count"] = h.get("overlap", 0)
         if use_jdg:
             j01 = h.get("judge01", None)
             if j01 is None:
@@ -879,6 +836,49 @@ def _near_miss(hs, q, qs=None, use_jdg=USE_JDG_DEFAULT):
     else:
         c.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
     return c[:NM_MAX], {"threshold": NM_MIN, "used_judge": bool(use_jdg)}
+
+
+def _ensure_near_miss_candidates(nm_hits, hs_pool, q, qs=None, min_n: int = 3, max_n: int = NM_MAX):
+    qs = qs if qs is not None else set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
+    out = []
+    seen = set()
+    for h in nm_hits or []:
+        key = (h.get("cid"), h.get("cidx"), h.get("fp"))
+        seen.add(key)
+        out.append(h)
+    if len(out) >= max_n:
+        return out[:max_n]
+    pool = hs_pool or []
+    pool = sorted(pool, key=lambda x: float(x.get("_jdg", x.get("judge01", x.get("score", 0.0)))), reverse=True)
+    for h in pool:
+        if len(out) >= max_n:
+            break
+        key = (h.get("cid"), h.get("cidx"), h.get("fp"))
+        if key in seen:
+            continue
+        h2 = dict(h)
+        ok, ov_meta = _ov_ok(q, h2, qs=qs)
+        if not ok:
+            continue
+        h2["overlap"] = ov_meta.get("overlap", 0)
+        h2["overlap_count"] = h2.get("overlap", 0)
+        out.append(h2)
+        seen.add(key)
+        if len(out) >= max_n:
+            break
+    return out[:max_n]
+
+
+def _annotate_near_miss_hits(hs, threshold: float, explanation: str):
+    out = []
+    for h in hs or []:
+        h2 = dict(h)
+        h2["near_miss_threshold"] = threshold
+        h2.setdefault("overlap_count", h2.get("overlap", 0))
+        if explanation:
+            h2["near_miss_explanation"] = explanation
+        out.append(h2)
+    return out
 
 
 def _strip_internal(hs):
@@ -911,6 +911,9 @@ def _pub_hit(h):
     h2.setdefault("score", float(h2.get("score", 0.0)))
     h2.setdefault("judge01", h2.get("judge01", None))
     h2["_jdg01"] = h2.get("judge01", None)
+    h2["overlap_count"] = h2.get("overlap", 0)
+    if h2.get("near_miss_threshold") is None and h2.get("near_miss_explanation") is not None:
+        h2["near_miss_threshold"] = NM_MIN
     h2.setdefault("corp", h2.get("corp") or h2.get("publisher") or "")
     h2.setdefault("publisher", h2.get("publisher") or h2.get("corp") or "")
     h2.setdefault("book", h2.get("book") or (Path(fp).stem if fp else ""))
@@ -1062,6 +1065,7 @@ def run_query(
     sort: str = "Best evidence",
     nm: bool | None = None,
     show_nm: bool | None = None,
+    compute_near_miss: bool | None = True,
     jmin: float | None = None,
     use_jdg: bool | None = None,
     jdg_mode: str | None = None,
@@ -1072,11 +1076,16 @@ def run_query(
 ):
     t_total = _t0()
     meta = _blank_meta()
+    meta["meta_nm"] = {"threshold": NM_MIN, "used_judge": False, "skipped": False, "explanation": NEAR_MISS_EXPLANATION, "compute_enabled": True, "count": 0}
+    meta["near_miss_threshold"] = NM_MIN
     use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
     jdg_mode = (jdg_mode or "proxy").lower()
     if not use_jdg_flag:
         jdg_mode = "off"
-    nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
+    nm_flag_user = nm if nm is not None else (show_nm if show_nm is not None else True)
+    nm_flag = bool(compute_near_miss if compute_near_miss is not None else True) and bool(nm_flag_user)
+    meta["meta_nm"]["skipped"] = not nm_flag
+    meta["meta_nm"]["compute_enabled"] = bool(nm_flag)
     mode = (mode or "quick").lower()
     meta["cap"]["has_emb"] = e.emb is not None
     meta["cap"]["dense_ok"] = bool(getattr(e, "ix", {}))
@@ -1218,10 +1227,14 @@ def run_query(
         meta["t"]["direct"] = _dt(t_direct)
         meta["n"]["direct_hits"] = len(dr)
         cov = coverage_label(dr, q)
+        nm_meta = {"threshold": NM_MIN, "used_judge": disp_use_jdg, "skipped": not nm_flag, "explanation": NEAR_MISS_EXPLANATION, "compute_enabled": bool(nm_flag)}
 
         if dr:
             meta["t"]["near_miss"] = 0.0
             meta["n"]["near_miss"] = 0
+            nm_meta["count"] = 0
+            meta["meta_nm"] = nm_meta
+            meta["near_miss_threshold"] = nm_meta.get("threshold", NM_MIN)
             meta["conf"] = _calc_confidence(dr)
             # LLM assembly (optional)
             t_llm = _t0()
@@ -1245,16 +1258,24 @@ def run_query(
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
-        nm_hits, nm_meta = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg) if nm_flag else ([], {"threshold": NM_MIN, "used_judge": disp_use_jdg})
+        if nm_flag:
+            nm_hits, nm_meta_calc = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg)
+            nm_meta.update(nm_meta_calc or {})
+        else:
+            nm_hits = []
+        nm_hits = _ensure_near_miss_candidates(nm_hits, hs2, q, qs=qs, min_n=3, max_n=NM_MAX) if nm_flag else []
         meta["t"]["near_miss"] = _dt(t_nm)
         meta["n"]["near_miss"] = len(nm_hits)
+        nm_meta["count"] = len(nm_hits)
         meta["meta_nm"] = nm_meta
+        meta["near_miss_threshold"] = nm_meta.get("threshold", NM_MIN)
         meta["t"]["total"] = _dt(t_total)
         meta["conf"] = _calc_confidence(dr if dr else hs3)
         meta["flags"]["llm_bypassed"] = True
         _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
-        return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
+        nm_hits_pub = _pub_hits(_annotate_near_miss_hits(nm_hits, meta["near_miss_threshold"], nm_meta.get("explanation")))
+        return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=nm_hits_pub, cov=cov, ans="", meta=meta)
     except Exception as ex:
         meta["err"] = {"where": "run_query", "msg": _safe_msg(ex), "id": _err_id()}
         meta["t"]["total"] = _dt(t_total)

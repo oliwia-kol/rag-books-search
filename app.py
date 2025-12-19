@@ -28,12 +28,19 @@ def _run(eng, q: str):
         q,
         pubs=pubs,
         use_jdg=True,
+        jdg_mode=ss.get("jdg_mode", "proxy"),
         sort=ss.get("srt", "Best evidence"),
         show_nm=bool(ss.get("nm", True)),
+        nm=not bool(ss.get("nm_skip", False)),
         jmin=float(ss.get("jmin", 0.45)),
     )
     ss["res"] = rr
     ss["last_q"] = q
+    if rr.get("meta", {}).get("err"):
+        err = rr["meta"]["err"]
+        ss["_ui_err"] = f"Retrieval/LLM issue ({err.get('id')}). Try again. Details: {err.get('msg')}"
+    else:
+        ss["_ui_err"] = None
 
 
 def _on_search():
@@ -87,6 +94,7 @@ def main():
     ua.render_conf(rr)
     ua.render_context_panel()
     ua.render_evidence_list(rr, q=ss.get("last_q", ""))
+    ua.render_near_miss(rr, q=ss.get("last_q", ""))
 
 
 if __name__ == "__main__":

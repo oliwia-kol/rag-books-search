@@ -27,9 +27,10 @@ Legend: [x] done, [ ] todo
 ## Stage 1C: Visual polish (quick wins)
 - [x] Cards have subtle border + spacing
 - [x] Sidebar pinned rows: title + meta + non-overlapping remove button
-- [ ] Typography consistency pass (titles/metadata line-height)
+- [x] Typography consistency pass (titles/metadata line-height)
+- [x] Confidence/progress styling aligned with dark theme
+- [x] Evidence snippets clamped + highlighted
 
 ## Stage 1D: Regression / contract safety
 - [x] No API mismatch between `app.py` and `ui_*.py` (single validated pack)
 - [ ] Add tiny contract smoke script in repo (optional)
-

@@ -29,7 +29,7 @@ def main():
     _has(us, ["init_state", "sidebar", "global_error_box", "toast_flush", "qp_get", "qp_set", "cb_clear"])
     _has(ua, ["render_answer", "render_conf", "render_context_panel", "render_evidence_list"])
     _has(ut, ["apply_theme"])
-    _has(re_mod, ["_mk_eng", "run_query", "Eng"])
+    _has(re_mod, ["_mk_eng", "run_query", "Eng", "get_startup_report"])
 
     # chk() soft-report
     rep = re_mod.chk(Path("/tmp/does-not-exist"))
@@ -74,7 +74,7 @@ def main():
     if rq["meta"]["t"]["total"] < 0:
         raise AssertionError("meta.t.total should be populated")
     # meta flags/caps should be present and stable
-    for flag in ["dense_used", "lex_used", "veto_applied", "llm_used"]:
+    for flag in ["dense_used", "lex_used", "veto_applied", "llm_used", "llm_bypassed", "dense_clamped", "lex_clamped"]:
         if flag not in rq["meta"]["flags"]:
             raise AssertionError(f"meta.flags missing: {flag}")
     for cap in ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind", "corp_available"]:

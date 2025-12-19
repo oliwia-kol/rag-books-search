@@ -55,6 +55,8 @@ def main():
     ss = st.session_state
     if "eng" not in ss:
         ss["eng"] = _mk_eng()
+    if "startup_report" not in ss:
+        ss["startup_report"] = re.get_startup_report(ss["eng"])
 
     # one-time load from URL
     if "_qp_loaded" not in ss:
@@ -63,7 +65,7 @@ def main():
             ss["q_inp"] = q0
         ss["_qp_loaded"] = True
 
-    us.sidebar(ss["eng"])
+    us.sidebar(ss["eng"], startup_report=ss.get("startup_report"))
     us.toast_flush()
 
     st.title("RAG Books Search")

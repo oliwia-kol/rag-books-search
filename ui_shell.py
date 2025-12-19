@@ -91,7 +91,7 @@ def _pin_lbl(p: dict) -> str:
     return t
 
 
-def sidebar(eng=None):
+def sidebar(eng=None, startup_report=None):
     ss = st.session_state
     with st.sidebar:
         st.toggle("Advanced", key="adv")
@@ -153,3 +153,21 @@ def sidebar(eng=None):
         else:
             st.caption("Use Copy on a card to put a citation here.")
         st.button("Clear clipboard", key="clip_clear", on_click=cb_clear)
+
+        st.divider()
+
+        st.subheader("Startup status")
+        if not startup_report:
+            st.caption("No corpus status available.")
+        else:
+            for row in startup_report:
+                ready = bool(row.get("ready"))
+                color = "#2aa865" if ready else "#d23030"
+                reason = "Ready" if ready else (row.get("reason") or "Unavailable")
+                st.markdown(
+                    f"<div style='display:flex; gap:8px; align-items:center; color:{color}; font-size:0.9em;'>"
+                    f"<span style='font-size:1.1em;'>{'●'}</span>"
+                    f"<span><strong>{row.get('publisher', 'Unknown')}</strong> — {reason}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )

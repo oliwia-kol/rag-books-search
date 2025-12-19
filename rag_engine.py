@@ -192,50 +192,71 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
     for k, p in c2p.items():
         ok_dense = False
         dim_ok = True
-        ix_err = None
-        if p in ready.values():
+        failure_reason = None
+        rep = reports.get(k, {})
+        rep.setdefault("dense_loaded", False)
+        rep.setdefault("db_loaded", False)
+        rep.setdefault("dim_ok", False)
+        rep.setdefault("embed_dim", emb_dim)
+        rep.setdefault("ix_dim", None)
+        rep.setdefault("failure_reason", None)
+
+        if k in ready:
             try:
                 rd = faiss.read_index(str(p / "index.faiss"))
                 dims[k] = int(rd.d)
+                rep["ix_dim"] = dims.get(k)
                 if emb_dim is not None and dims[k] != emb_dim:
                     dim_ok = False
-                    ix_err = f"dim_mismatch:{dims[k]}!={emb_dim}"
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {dims[k]}"
                 else:
                     ix[k] = rd
                     ok_dense = True
-            except Exception as ex:
+            except Exception as e:
                 dim_ok = False
-                ix_err = _safe_msg(ex)
+                failure_reason = f"index load error: {type(e).__name__}"
 
-        db_path = p / "meta.sqlite"
-        db_exists = db_path.exists()
-        if db_exists:
-            dbp[k] = db_path
+            db_path = p / "meta.sqlite"
+            db_exists = db_path.exists()
+            if db_exists:
+                dbp[k] = db_path
 
-        if ok_dense or db_exists:
-            loaded[k] = p
+            if ok_dense or db_exists:
+                loaded[k] = p
 
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        rep["reason"] = ix_err
-        rep["exists"] = rep.get("exists", False)
-        rep["loaded"] = ok_dense or db_exists
-        status[k] = {
-            "publisher": k,
-            "exists": rep.get("exists", False),
-            "loaded": ok_dense or db_exists,
-            "dense_ok": ok_dense and dim_ok,
-            "dim_ok": dim_ok,
-            "db_ok": db_exists,
-            "ix_dim": dims.get(k),
-            "embed_dim": emb_dim,
-            "reasons": [r for r in [ix_err] if r],
-        }
+            rep["dense_loaded"] = ok_dense
+            rep["db_loaded"] = db_exists
+            rep["dim_ok"] = dim_ok
+            rep["embed_dim"] = emb_dim
+
+        # annotate failure_reason for non-ready corpora
+        ready_condition = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        if ready_condition:
+            rep["failure_reason"] = None
+        else:
+            if not rep.get("exists"):
+                failure_reason = "corpus folder missing"
+            elif rep.get("missing"):
+                failure_reason = f"missing: {', '.join(rep['missing'])}"
+            elif failure_reason is None and (not rep.get("dense_loaded") or not rep.get("dim_ok")):
+                if rep.get("ix_dim") and emb_dim and rep.get("ix_dim") != emb_dim:
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {rep.get('ix_dim')}"
+                elif failure_reason is None:
+                    failure_reason = "dense index unavailable"
+            elif failure_reason is None and not rep.get("db_loaded"):
+                failure_reason = "metadata db unavailable"
+            rep["failure_reason"] = failure_reason
+
         reports[k] = rep
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
@@ -247,6 +268,33 @@ def get_startup_report(e: Eng) -> Dict[str, Any]:
         "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
         "corp": getattr(e, "corp_status", {}),
     }
+
+
+def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
+    rows = []
+    for pub in CORP.keys():
+        rep = eng.corp_report.get(pub, {})
+        ready = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        rows.append(
+            {
+                "publisher": pub,
+                "loaded_dense": bool(rep.get("dense_loaded")),
+                "loaded_db": bool(rep.get("db_loaded")),
+                "ready": bool(ready),
+                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
+            }
+        )
+    return rows
 
 
 def _db(con_p: Path) -> sqlite3.Connection:

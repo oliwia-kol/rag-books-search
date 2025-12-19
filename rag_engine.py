@@ -321,51 +321,6 @@ def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
     return rows
 
 
-def _fuse_dense_lex(d_rows, l_rows, corp):
-    dd = {x["cid"]: x for x in d_rows}
-    ll = {x["cid"]: x for x in l_rows}
-    cids = set(dd) | set(ll)
-    cands = []
-    for cid in cids:
-        a = dd.get(cid, {})
-        b = ll.get(cid, {})
-        row = {
-            "cid": cid,
-            "cidx": a.get("cidx") if "cidx" in a else b.get("cidx"),
-            "fp": a.get("fp") or b.get("fp"),
-            "tx": a.get("tx") or b.get("tx"),
-            "sec": a.get("sec") or b.get("sec"),
-            "corp": a.get("corp") or b.get("corp") or corp,
-            # aliases
-            "text": a.get("text") or b.get("text") or a.get("tx") or b.get("tx"),
-            "section": a.get("section") or b.get("section") or a.get("sec") or b.get("sec"),
-            "book": a.get("book") or b.get("book") or (Path(a.get("fp") or b.get("fp")).stem if (a.get("fp") or b.get("fp")) else None),
-            "publisher": a.get("publisher") or b.get("publisher") or corp,
-        }
-        ss = float(a.get("sem_score_n", 0.0))
-        ls = float(b.get("lex_score_n", 0.0))
-        row["sem_score_n"] = ss
-        row["lex_score_n"] = ls
-        row["score"] = 0.65 * ss + 0.35 * ls
-        cands.append(row)
-    return cands
-
-
-def _dedupe(cands, k):
-    # dedupe by (fp, sec)
-    seen = set()
-    out = []
-    for x in cands:
-        k2 = (x.get("fp"), x.get("sec"))
-        if k2 in seen:
-            continue
-        seen.add(k2)
-        out.append(x)
-        if len(out) >= k:
-            break
-    return out
-
-
 def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.ndarray | None = None):
     """Dense+lexical hybrid retrieval across selected publishers."""
     if qv is None:
@@ -391,12 +346,52 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         meta["lex_hits"] += len(l)
         meta["pubs_used"] += 1
 
-        fused = _fuse_dense_lex(d, l, corp)
-        cands.extend(fused)
+        dd = {x["cid"]: x for x in d}
+        ll = {x["cid"]: x for x in l}
+        cids = set(dd) | set(ll)
 
-    cands.sort(key=lambda z: (-float(z.get("score", 0.0)), str(z.get("fp", "")), str(z.get("sec", "")), str(z.get("cid", ""))))
+        for cid in cids:
+            a = dd.get(cid, {})
+            b = ll.get(cid, {})
+            row = {
+                "cid": cid,
+                "cidx": a.get("cidx") if "cidx" in a else b.get("cidx"),
+                "fp": a.get("fp") or b.get("fp"),
+                "tx": a.get("tx") or b.get("tx"),
+                "sec": a.get("sec") or b.get("sec"),
+                "corp": a.get("corp") or b.get("corp") or corp,
+                # aliases for UI convenience
+                "text": a.get("text") or b.get("text") or a.get("tx") or b.get("tx"),
+                "section": a.get("section") or b.get("section") or a.get("sec") or b.get("sec"),
+                "book": a.get("book") or b.get("book") or (Path(a.get("fp") or b.get("fp")).stem if (a.get("fp") or b.get("fp")) else None),
+                "publisher": a.get("publisher") or b.get("publisher") or corp,
+            }
 
-    out = _dedupe(cands, k)
+            ss = float(a.get("sem_score_n", 0.0))
+            ls = float(b.get("lex_score_n", 0.0))
+            row["sem_score_n"] = ss
+            row["lex_score_n"] = ls
+            row["score"] = 0.65 * ss + 0.35 * ls
+            cands.append(row)
+
+    cands.sort(key=lambda z: float(z.get("score", 0.0)), reverse=True)
+
+    # lightweight de-dupe by (book, section) to improve diversity
+    seen = set()
+    out = []
+    for s in sents:
+        out.append(s)
+        if len(out) >= max_sent or len(" ".join(out)) >= target_chars:
+            break
+    if len(out) < min_sent and len(sents) > len(out):
+        out.append(sents[len(out)])
+    return " ".join(out)[:target_chars].rstrip()
+
+
+def _safe_msg(ex, max_len: int = 200) -> str:
+    msg = f"{type(ex).__name__}: {ex}"
+    msg = msg.replace("\n", " ")[:max_len]
+    return msg
 
     meta["cands"] = len(cands)
     return out, meta
@@ -418,22 +413,6 @@ def _dt(t0):
         return time.time() - float(t0)
     except Exception:
         return 0.0
-
-
-def _sent_clip(text: str, target_chars: int = 700, min_sent: int = 2, max_sent: int = 4) -> str:
-    """Return a clipped snippet consisting of whole sentences."""
-    if not text:
-        return ""
-    sents = re.split(r"(?<=[.!?])\s+", str(text).strip())
-    sents = [s.strip() for s in sents if s.strip()]
-    out = []
-    for s in sents:
-        out.append(s)
-        if len(out) >= max_sent or len(" ".join(out)) >= target_chars:
-            break
-    if len(out) < min_sent and len(sents) > len(out):
-        out.append(sents[len(out)])
-    return " ".join(out)[:target_chars].rstrip()
 
 
 def _safe_msg(ex, max_len: int = 200) -> str:
@@ -487,7 +466,7 @@ def _jdg_rerank(q, hs):
             js = float(h.get("score", 0.0))
             h["_jdg"] = js
             h["judge01"] = js
-        hs.sort(key=lambda x: (-float(x.get("judge01", 0.0)), str(x.get("fp", "")), str(x.get("sec", "")), str(x.get("cid", ""))))
+        hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
         return hs, {"ok": False, "t": 0.0, "n": len(hs)}
     tp = hs[: min(K_JDG, len(hs))]
     pairs = [(q, (h.get("text") or "")[:1200]) for h in tp]

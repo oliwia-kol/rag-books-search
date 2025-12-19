@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -16,6 +16,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 
 
+# -----------------------------
 # -----------------------------
 # Paths (repo-local)
 # -----------------------------
@@ -52,6 +53,7 @@ def chk(p: Path) -> Dict[str, Any]:
 
 
 # -----------------------------
+# -----------------------------
 # Retrieval + judge config
 # -----------------------------
 HCFG = {
@@ -63,6 +65,11 @@ HCFG = {
     "min_faiss_score": 0.18,
     "dense_k": 30,
     "lex_k": 30,
+    "fusion_dense_w": 0.65,
+    "fusion_lex_w": 0.35,
+    "max_snippet_chars": 850,
+    "max_ctx_chars": 1400,
+    "max_prompt_chars": 2000,
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -157,6 +164,7 @@ class Eng:
     corp: Dict[str, Path]
     ix_dim: Dict[str, int]
     corp_report: Dict[str, Dict[str, Any]]
+    corp_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/all-MiniLM-L6-v2") -> Eng:
@@ -179,21 +187,25 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
     dbp: Dict[str, Path] = {}
     loaded: Dict[str, Path] = {}
     dims: Dict[str, int] = {}
+    status: Dict[str, Dict[str, Any]] = {}
 
-    for k, p in ready.items():
+    for k, p in c2p.items():
         ok_dense = False
         dim_ok = True
-        try:
-            rd = faiss.read_index(str(p / "index.faiss"))
-            dims[k] = int(rd.d)
-            if emb_dim is not None and dims[k] != emb_dim:
+        ix_err = None
+        if p in ready.values():
+            try:
+                rd = faiss.read_index(str(p / "index.faiss"))
+                dims[k] = int(rd.d)
+                if emb_dim is not None and dims[k] != emb_dim:
+                    dim_ok = False
+                    ix_err = f"dim_mismatch:{dims[k]}!={emb_dim}"
+                else:
+                    ix[k] = rd
+                    ok_dense = True
+            except Exception as ex:
                 dim_ok = False
-            else:
-                ix[k] = rd
-                ok_dense = True
-        except Exception:
-            dim_ok = False
-            pass
+                ix_err = _safe_msg(ex)
 
         db_path = p / "meta.sqlite"
         db_exists = db_path.exists()
@@ -210,9 +222,31 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
         rep["dim_ok"] = dim_ok
         rep["embed_dim"] = emb_dim
         rep["ix_dim"] = dims.get(k)
+        rep["reason"] = ix_err
+        rep["exists"] = rep.get("exists", False)
+        rep["loaded"] = ok_dense or db_exists
+        status[k] = {
+            "publisher": k,
+            "exists": rep.get("exists", False),
+            "loaded": ok_dense or db_exists,
+            "dense_ok": ok_dense and dim_ok,
+            "dim_ok": dim_ok,
+            "db_ok": db_exists,
+            "ix_dim": dims.get(k),
+            "embed_dim": emb_dim,
+            "reasons": [r for r in [ix_err] if r],
+        }
         reports[k] = rep
 
-    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports)
+    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
+
+
+def get_startup_report(e: Eng) -> Dict[str, Any]:
+    return {
+        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
+        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
+        "corp": getattr(e, "corp_status", {}),
+    }
 
 
 def _db(con_p: Path) -> sqlite3.Connection:
@@ -285,6 +319,7 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             if not row:
                 continue
             cid, fp, sec, cidx, tx, _ = row
+            tx = (tx or "")[: HCFG["max_snippet_chars"]]
             out.append(
                 {
                     "corp": corp,
@@ -358,6 +393,12 @@ def dense_retrieve(e: Eng, corp: str, qv: np.ndarray, k: int | None = None):
         return []
     if qv.size == 0:
         return []
+    try:
+        norm = np.linalg.norm(qv)
+        if norm > 0:
+            qv = qv / norm
+    except Exception:
+        pass
     rows = faiss_search(e, corp, qv, k or HCFG["faiss_fetch_k"])
     norm_scores(rows, "sem_score")
     for r in rows:
@@ -427,7 +468,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             ls = float(b.get("lex_score_n", 0.0))
             row["sem_score_n"] = ss
             row["lex_score_n"] = ls
-            row["score"] = 0.65 * ss + 0.35 * ls
+            row["score"] = HCFG["fusion_dense_w"] * ss + HCFG["fusion_lex_w"] * ls
             cands.append(row)
 
     cands.sort(key=lambda z: float(z.get("score", 0.0)), reverse=True)
@@ -708,7 +749,7 @@ def _calc_confidence(dr):
     return max(0.0, min(1.0, base))
 
 
-def _assemble_context(dr, budget_chars: int = 1400):
+def _assemble_context(dr, budget_chars: int = HCFG["max_ctx_chars"]):
     if not dr:
         return ""
     # deterministic by judge01/score
@@ -730,32 +771,45 @@ def llm_call(prompt: str, cfg: Optional[dict] = None) -> str:
     # placeholder CPU-friendly stub; can be replaced with real model later
     if not prompt:
         return ""
-    return prompt.strip()[:800]
+    budget = (cfg or {}).get("max_chars") or HCFG["max_prompt_chars"]
+    return prompt.strip()[: int(budget)]
 
 
 def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
     """Fetch context window for reading mode."""
-    for corp, dbp in getattr(e, "dbp", {}).items():
-        try:
-            con = _db(dbp)
-            cur = con.cursor()
-            rows = cur.execute(
-                """
-                SELECT cid, fp, sec, cidx, tx FROM chunks
-                WHERE fp=? AND cidx BETWEEN ? AND ?
-                ORDER BY cidx
-                """,
-                (fp, int(cidx) - int(window), int(cidx) + int(window)),
-            ).fetchall()
-            con.close()
-            if rows:
-                return [
-                    {"cid": r[0], "fp": r[1], "sec": r[2], "cidx": int(r[3]), "tx": r[4], "corp": corp}
-                    for r in rows
-                ]
-        except Exception:
-            continue
-    return []
+    try:
+        chunks = []
+        for corp, dbp in getattr(e, "dbp", {}).items():
+            try:
+                con = _db(dbp)
+                cur = con.cursor()
+                rows = cur.execute(
+                    """
+                    SELECT cid, fp, sec, cidx, tx FROM chunks
+                    WHERE fp=? AND cidx BETWEEN ? AND ?
+                    ORDER BY cidx
+                    """,
+                    (fp, int(cidx) - int(window), int(cidx) + int(window)),
+                ).fetchall()
+                con.close()
+                if rows:
+                    chunks = [
+                        {
+                            "cid": r[0],
+                            "fp": r[1],
+                            "sec": r[2],
+                            "cidx": int(r[3]),
+                            "tx": (r[4] or "")[: HCFG["max_snippet_chars"]],
+                            "corp": corp,
+                        }
+                        for r in rows
+                    ]
+                    break
+            except Exception:
+                continue
+        return {"ok": bool(chunks), "chunks": chunks, "err": None if chunks else "not_found"}
+    except Exception as ex:
+        return {"ok": False, "chunks": [], "err": _safe_msg(ex)}
 
 
 def _log_event(meta, mode, pubs, qlen):
@@ -769,6 +823,7 @@ def _log_event(meta, mode, pubs, qlen):
             "flags": dict(meta.get("flags", {})),
             "judge_ok": meta.get("cap", {}).get("judge_ok", False),
             "no_evidence": meta.get("err") is None and meta.get("n", {}).get("direct_hits", 0) == 0,
+            "cutoff_rule": meta.get("cut_rule"),
         }
     except Exception:
         pass
@@ -875,9 +930,10 @@ def run_query(
 
         # cutoff
         t_cut = _t0()
-        hs2, _ = _cut(hs, k=K_SHOW, mnk=MNK)
+        hs2, cut_meta = _cut(hs, k=K_SHOW, mnk=MNK)
         meta["t"]["cut"] = _dt(t_cut)
         meta["n"]["after_cut"] = len(hs2)
+        meta["cut_rule"] = cut_meta.get("rule")
 
         if not use_jdg_flag:
             for h in hs2:
@@ -934,7 +990,7 @@ def run_query(
                 ctx = _assemble_context(dr)
                 prompt = f"Context:\n{ctx}\n\nQuestion: {q}\nAnswer concisely without quotes."
                 try:
-                    ans_txt = llm_call(prompt, cfg={"mode": "quick"})
+                    ans_txt = llm_call(prompt, cfg={"mode": "quick", "max_chars": HCFG["max_prompt_chars"]})
                     meta["flags"]["llm_used"] = True
                 except Exception:
                     ans_txt = ""

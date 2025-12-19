@@ -28,7 +28,7 @@ def _run(eng, q: str):
         q,
         pubs=pubs,
         use_jdg=True,
-        jdg_mode=ss.get("jdg_mode", "proxy"),
+        judge_mode=ss.get("judge_mode", ss.get("jdg_mode", "proxy")),
         sort=ss.get("srt", "Best evidence"),
         show_nm=bool(ss.get("nm", True)),
         nm=not bool(ss.get("nm_skip", False)),
@@ -97,6 +97,7 @@ def main():
     ua.render_context_panel()
     ua.render_evidence_list(rr, q=ss.get("last_q", ""))
     ua.render_near_miss(rr, q=ss.get("last_q", ""))
+    ua.render_power_panel(rr)
 
 
 if __name__ == "__main__":

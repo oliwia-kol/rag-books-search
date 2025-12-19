@@ -23,6 +23,8 @@ def test_proxy_judge_sets_flags(monkeypatch):
     res = re.run_query(eng, "q", pubs=["c"], use_llm=False, jdg_mode="proxy")
     assert res["meta"]["cap"]["judge_kind"] in {"proxy_score", "none", "off"}
     assert res["meta"]["flags"]["veto_disabled"] is True
+    assert res["meta"]["flags"]["veto_disabled_when_proxy"] is True
+    assert res["meta"]["log"]["judge_mode"] == "proxy"
 
 
 def test_real_judge_path_sets_cross_encoder(monkeypatch):
@@ -36,3 +38,4 @@ def test_real_judge_path_sets_cross_encoder(monkeypatch):
     res = re.run_query(eng, "q", pubs=["c"], use_llm=False, jdg_mode="real")
     assert res["meta"]["cap"]["judge_kind"] == "cross_encoder"
     assert res["meta"]["cap"]["judge_ok"] is True
+    assert res["meta"]["flags"]["veto_disabled_when_proxy"] is False

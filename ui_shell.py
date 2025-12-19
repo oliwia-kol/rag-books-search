@@ -24,10 +24,12 @@ def init_state():
     ss.setdefault("adv", False)
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
     ss.setdefault("srt", "Best evidence")
-    ss.setdefault("nm", True)          # show near-miss when ok=True
-    ss.setdefault("nm_skip", False)    # skip near-miss computation to save cost
-    ss.setdefault("jmin", 0.45)        # display min judge01
-    ss.setdefault("jdg_mode", "proxy") # judge mode: proxy / real / off
+    ss.setdefault("nm", True)           # show near-miss when ok=True
+    ss.setdefault("nm_skip", False)     # skip near-miss computation to save cost
+    ss.setdefault("jmin", 0.45)         # display min judge01
+    ss.setdefault("judge_mode", "proxy")  # judge mode: proxy / real / off
+    if "jdg_mode" in ss:
+        ss.setdefault("judge_mode", ss.get("jdg_mode"))
 
     # HARD REQUIREMENTS
     ss["use_jdg"] = True               # judge must be ON by default (and stay on)
@@ -129,9 +131,9 @@ def sidebar(eng=None, startup_report=None):
         st.selectbox(
             "Judge mode",
             options=["proxy", "real", "off"],
-            index=["proxy", "real", "off"].index(ss.get("jdg_mode", "proxy")),
+            index=["proxy", "real", "off"].index(ss.get("judge_mode", "proxy")),
             help="proxy = score-based, real = cross-encoder (CPU), off = bypass",
-            key="jdg_mode",
+            key="judge_mode",
         )
 
         if eng is not None:

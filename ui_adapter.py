@@ -52,6 +52,18 @@ def _sent(txt: str, n: int = 1, mx: int = 520) -> str:
     return t
 
 
+def _snippet(h: Dict[str, Any], q: str = "", mx: int = 280) -> str:
+    txt = (h or {}).get("text") or (h or {}).get("tx") or ""
+    t = _sent(txt, n=1, mx=mx)
+    if not q:
+        return t
+    terms = [re.escape(w) for w in re.findall(r"[A-Za-z0-9]{3,}", q)]
+    if not terms:
+        return t
+    pat = re.compile("(" + "|".join(terms) + ")", flags=re.I)
+    return pat.sub(r"**\\1**", t)
+
+
 def _titleize_slug(s: str) -> str:
     s = _ws(_de_mojibake(s))
     if not s:
@@ -193,9 +205,18 @@ def render_answer(rr: Dict[str, Any]):
         st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
         st.subheader("Answer")
         if ans:
-            st.write(ans)
+            sents = _split_sents(ans)
+            limited = " ".join(sents[:5]) if sents else ans
+            st.write(limited)
+            if len(sents) > 5:
+                st.caption("Clamped to 5 sentences for readability.")
         else:
-            st.caption("No answer.")
+            hits = (rr or {}).get("hits") or []
+            if hits:
+                st.caption("No LLM answer. Evidence-first preview:")
+                st.write(_snippet(hits[0], q=""))
+            else:
+                st.caption("No answer.")
 
 
 def render_conf(rr: Dict[str, Any]):
@@ -206,8 +227,25 @@ def render_conf(rr: Dict[str, Any]):
         v = float(cf)
     except Exception:
         return
+    v = max(0.0, min(1.0, v))
+    cov = (rr or {}).get("coverage") or "WEAK"
+    meta = (rr or {}).get("meta") or {}
+    n = meta.get("n", {})
+    books = n.get("uniq_books", 0)
+    secs = n.get("uniq_sections", 0)
+    state = "Low" if v < 0.35 else "Medium" if v < 0.65 else "High"
     st.caption("Confidence")
-    st.progress(max(0.0, min(1.0, v)))
+    c1, c2 = st.columns([0.65, 0.35])
+    with c1:
+        try:
+            st.progress(v, text=f"{state} • coverage {cov}")
+        except Exception:
+            st.progress(v)
+            st.caption(f"{state} • coverage {cov}")
+    with c2:
+        st.caption(f"Books: {books} | Sections: {secs}")
+        if books <= 1:
+            st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
 
 
 def render_context_panel():
@@ -272,7 +310,7 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
         render_card(h, q, i)
 
 
-def render_card(h: Dict[str, Any], q: str, i: int):
+def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     tt = _pretty_title(h)
     pub = _pub(h)
     sec = _sec_lbl(h)
@@ -288,7 +326,9 @@ def render_card(h: Dict[str, Any], q: str, i: int):
         # small quality line
         st.caption(f"judge01 {j:.2f} | score {_score(h):.2f}")
 
-        st.write(_sent((h or {}).get("text") or "", n=1))
+        if near_miss:
+            st.caption("Near-miss candidate (no direct evidence).")
+        st.markdown(_snippet(h, q=q, mx=260))
 
         b1, b2, b3 = st.columns(3)
         with b1:
@@ -322,3 +362,19 @@ def render_card(h: Dict[str, Any], q: str, i: int):
                 st.write(f"overlap: {ov}")
             st.write(f"judge01: {j:.3f}")
             st.write(f"score: {_score(h):.3f}")
+
+
+def render_near_miss(rr: Dict[str, Any], q: str = ""):
+    if not (rr or {}).get("no_evidence"):
+        return
+    nm = list((rr or {}).get("near_miss") or [])
+    if not nm:
+        return
+    nm = nm[:6]
+    st.subheader("Near-miss evidence (no direct hit)")
+    meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
+    st.caption(
+        f"Showing {len(nm)} candidates • threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
+    )
+    for i, h in enumerate(nm):
+        render_card(h, q, i, near_miss=True)

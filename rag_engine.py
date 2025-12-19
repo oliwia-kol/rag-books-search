@@ -1,21 +1,29 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import hashlib
+import logging
 import math
+import os
 import re
 import sqlite3
 import time
+import json
+from functools import lru_cache
 from statistics import pstdev
 
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
+from sentence_transformers import CrossEncoder
+
+logger = logging.getLogger(__name__)
 
 
+# -----------------------------
 # -----------------------------
 # Paths (repo-local)
 # -----------------------------
@@ -43,14 +51,26 @@ def chk(p: Path) -> Dict[str, Any]:
         "manifest": manifest_p.exists() if exists else False,
     }
     rep["ok"] = all([rep["exists"], rep["faiss"], rep["db"], rep["manifest"]])
+    reasons = []
+    if not exists:
+        reasons.append("missing_corpus_dir")
+    if exists:
+        if not rep["faiss"]:
+            reasons.append("missing_faiss")
+        if not rep["db"]:
+            reasons.append("missing_db")
+        if not rep["manifest"]:
+            reasons.append("missing_manifest")
     missing = []
     for k, flag in [("faiss", rep["faiss"]), ("db", rep["db"]), ("manifest", rep["manifest"])]:
         if not flag:
             missing.append(k)
     rep["missing"] = missing
+    rep["reasons"] = reasons
     return rep
 
 
+# -----------------------------
 # -----------------------------
 # Retrieval + judge config
 # -----------------------------
@@ -68,7 +88,11 @@ HCFG = {
     "min_faiss_score": 0.18,
     "dense_k": 30,
     "lex_k": 30,
-    "fallback_retry_max": FAISS_FALLBACK_RETRY_MAX,
+    "fusion_dense_w": 0.65,
+    "fusion_lex_w": 0.35,
+    "max_snippet_chars": 850,
+    "max_ctx_chars": 1400,
+    "max_prompt_chars": 2000,
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -96,6 +120,8 @@ META_N_KEYS = [
     "lex_hits",
     "fetched_dense",
     "fetched_lex",
+    "dense_fallback",
+    "dense_fallback_fail",
     "cands",
     "after_cut",
     "after_disp",
@@ -106,8 +132,8 @@ META_N_KEYS = [
     "fallback_retries",
     "fallback_failed",
 ]
-META_CAP_KEYS = ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind", "k_clamped"]
-META_FLAG_KEYS = ["dense_used", "lex_used", "veto_applied", "llm_used"]
+META_CAP_KEYS = ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind"]
+META_FLAG_KEYS = ["dense_used", "lex_used", "veto_applied", "veto_disabled", "llm_used", "llm_bypassed", "dense_clamped", "lex_clamped"]
 STAGES = META_T_KEYS
 
 # -----------------------------
@@ -172,6 +198,7 @@ class Eng:
     corp: Dict[str, Path]
     ix_dim: Dict[str, int]
     corp_report: Dict[str, Dict[str, Any]]
+    corp_status: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/all-MiniLM-L6-v2") -> Eng:
@@ -194,29 +221,79 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
     dbp: Dict[str, Path] = {}
     loaded: Dict[str, Path] = {}
     dims: Dict[str, int] = {}
+    status: Dict[str, Dict[str, Any]] = {}
 
-    for k, p in ready.items():
+    for k, p in c2p.items():
         ok_dense = False
         dim_ok = True
-        try:
-            rd = faiss.read_index(str(p / "index.faiss"))
-            dims[k] = int(rd.d)
-            if emb_dim is not None and dims[k] != emb_dim:
+        failure_reason = None
+        rep = reports.get(k, {})
+        rep.setdefault("dense_loaded", False)
+        rep.setdefault("db_loaded", False)
+        rep.setdefault("dim_ok", False)
+        rep.setdefault("embed_dim", emb_dim)
+        rep.setdefault("ix_dim", None)
+        rep.setdefault("failure_reason", None)
+
+        if k in ready:
+            try:
+                rd = faiss.read_index(str(p / "index.faiss"))
+                dims[k] = int(rd.d)
+                rep["ix_dim"] = dims.get(k)
+                if emb_dim is not None and dims[k] != emb_dim:
+                    dim_ok = False
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {dims[k]}"
+                else:
+                    ix[k] = rd
+                    ok_dense = True
+            except Exception as e:
                 dim_ok = False
-            else:
-                ix[k] = rd
-                ok_dense = True
-        except Exception:
-            dim_ok = False
-            pass
+                failure_reason = f"index load error: {type(e).__name__}"
 
-        db_path = p / "meta.sqlite"
-        db_exists = db_path.exists()
-        if db_exists:
-            dbp[k] = db_path
+            db_path = p / "meta.sqlite"
+            db_exists = db_path.exists()
+            if db_exists:
+                dbp[k] = db_path
 
-        if ok_dense or db_exists:
-            loaded[k] = p
+            if ok_dense or db_exists:
+                loaded[k] = p
+
+            rep["dense_loaded"] = ok_dense
+            rep["db_loaded"] = db_exists
+            rep["dim_ok"] = dim_ok
+            rep["embed_dim"] = emb_dim
+
+        # annotate failure_reason for non-ready corpora
+        ready_condition = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        if ready_condition:
+            rep["failure_reason"] = None
+        else:
+            if not rep.get("exists"):
+                failure_reason = "corpus folder missing"
+            elif rep.get("missing"):
+                failure_reason = f"missing: {', '.join(rep['missing'])}"
+            elif failure_reason is None and (not rep.get("dense_loaded") or not rep.get("dim_ok")):
+                if rep.get("ix_dim") and emb_dim and rep.get("ix_dim") != emb_dim:
+                    failure_reason = f"dim mismatch: emb {emb_dim} vs ix {rep.get('ix_dim')}"
+                elif failure_reason is None:
+                    failure_reason = "dense index unavailable"
+            elif failure_reason is None and not rep.get("db_loaded"):
+                failure_reason = "metadata db unavailable"
+            rep["failure_reason"] = failure_reason
+
+        reports[k] = rep
+
+    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
 
         # enrich report
         rep = reports.get(k, {})
@@ -225,9 +302,43 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
         rep["dim_ok"] = dim_ok
         rep["embed_dim"] = emb_dim
         rep["ix_dim"] = dims.get(k)
+        if not dim_ok:
+            rep.setdefault("reasons", []).append("embed_dim_mismatch")
         reports[k] = rep
 
-    return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports)
+def get_startup_report(e: Eng) -> Dict[str, Any]:
+    return {
+        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
+        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
+        "corp": getattr(e, "corp_status", {}),
+    }
+
+
+def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
+    rows = []
+    for pub in CORP.keys():
+        rep = eng.corp_report.get(pub, {})
+        ready = all(
+            [
+                rep.get("exists"),
+                rep.get("faiss"),
+                rep.get("db"),
+                rep.get("manifest"),
+                rep.get("dense_loaded"),
+                rep.get("db_loaded"),
+                rep.get("dim_ok"),
+            ]
+        )
+        rows.append(
+            {
+                "publisher": pub,
+                "loaded_dense": bool(rep.get("dense_loaded")),
+                "loaded_db": bool(rep.get("db_loaded")),
+                "ready": bool(ready),
+                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
+            }
+        )
+    return rows
 
 
 def _db(con_p: Path) -> sqlite3.Connection:
@@ -244,14 +355,17 @@ def embed_query(e: Eng, q: str) -> np.ndarray:
         return np.array([], dtype="float32")
 
 
+def _normalize_query(qv: np.ndarray) -> np.ndarray:
+    try:
+        v = np.asarray(qv, dtype="float32")
+        faiss.normalize_L2(v.reshape(1, -1))
+        return v
+    except Exception:
+        return qv
+
+
 def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
-    meta = {
-        "k_requested": int(k) if k is not None else HCFG["faiss_fetch_k"],
-        "k_applied": None,
-        "k_clamped": False,
-        "fallback_retries": 0,
-        "fallback_failed": 0,
-    }
+    meta = {"fallback_used": 0, "fallback_failed": 0, "clamped_k": False}
     if qv.size == 0:
         return [], meta
     if corp not in e.ix or corp not in e.dbp:
@@ -337,6 +451,7 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             if not row:
                 continue
             cid, fp, sec, cidx, tx, _ = row
+            tx = (tx or "")[: HCFG["max_snippet_chars"]]
             out.append(
                 {
                     "corp": corp,
@@ -420,12 +535,19 @@ def dense_retrieve(e: Eng, corp: str, qv: np.ndarray, k: int | None = None):
 
 def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
     if corp not in e.dbp:
-        return []
-    rows = fts_search(e, corp, q, k or HCFG["fts_fetch_k"])
+        return [], {}
+    clamp_flag = False
+    if k is not None and k > HCFG["fts_fetch_k"]:
+        clamp_flag = True
+    k_use = k or HCFG["fts_fetch_k"]
+    if k_use > HCFG["fts_fetch_k"]:
+        clamp_flag = True
+        k_use = HCFG["fts_fetch_k"]
+    rows = fts_search(e, corp, q, k_use)
     norm_scores(rows, "lex_score")
     for r in rows:
         r.setdefault("score", r.get("lex_score_n", 0.0))
-    return rows
+    return rows, {"clamped_k": clamp_flag}
 
 
 def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.ndarray | None = None):
@@ -470,7 +592,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             d, d_meta = [], {"k_clamped": False}
         meta["t_dense"] += _dt(t_d0)
         t_l0 = _t0()
-        l = lex_retrieve(e, corp, q, k=HCFG["lex_k"])
+        l, lmeta = lex_retrieve(e, corp, q, k=HCFG["lex_k"])
         meta["t_lex"] += _dt(t_l0)
 
         meta["dense_hits"] += len(d)
@@ -478,6 +600,10 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         meta["fetched_dense"] += len(d)
         meta["fetched_lex"] += len(l)
         meta["pubs_used"] += 1
+        meta["dense_fallback"] += dmeta.get("fallback_used", 0)
+        meta["dense_fallback_fail"] += dmeta.get("fallback_failed", 0)
+        meta["dense_clamped"] = meta["dense_clamped"] or dmeta.get("clamped_k", False)
+        meta["lex_clamped"] = meta["lex_clamped"] or lmeta.get("clamped_k", False)
 
         dd = {x["cid"]: x for x in d}
         ll = {x["cid"]: x for x in l}
@@ -504,7 +630,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             ls = float(b.get("lex_score_n", 0.0))
             row["sem_score_n"] = ss
             row["lex_score_n"] = ls
-            row["score"] = 0.65 * ss + 0.35 * ls
+            row["score"] = HCFG["fusion_dense_w"] * ss + HCFG["fusion_lex_w"] * ls
             cands.append(row)
 
     cands.sort(key=lambda z: float(z.get("score", 0.0)), reverse=True)
@@ -560,6 +686,10 @@ def _safe_msg(ex, max_len: int = 200) -> str:
     return msg
 
 
+def _err_id() -> str:
+    return f"err-{int(time.time() * 1000)}"
+
+
 def _blank_meta():
     cap = {k: False for k in META_CAP_KEYS}
     cap["judge_kind"] = "none"
@@ -570,6 +700,13 @@ def _blank_meta():
     cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
     return {"t": {k: 0.0 for k in META_T_KEYS}, "n": {k: 0 for k in META_N_KEYS}, "cap": cap, "flags": flags, "err": None, "log": {}}
+
+
+def get_startup_report(eng: Eng) -> Dict[str, Any]:
+    rep = getattr(eng, "corp_report", {}) or {}
+    ok = [k for k, v in rep.items() if v.get("ok")]
+    fail = [k for k in rep.keys() if k not in ok]
+    return {"ok": ok, "fail": fail, "by_corpus": rep}
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):
@@ -602,13 +739,32 @@ def _cut(hs, k=K_SHOW, mnk=MNK, abs_min: float = ABS_MN):
     }
 
 
+@lru_cache(maxsize=1)
 def _get_jdg():
-    # Cross-encoder judge intentionally deferred for CPU-only MVP.
-    return None
+    # cached loader; model can be overridden by env
+    model_name = os.environ.get("RAG_JUDGE_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    try:
+        return CrossEncoder(model_name)
+    except Exception:
+        return None
 
 
-def _jdg_rerank(q, hs):
-    j = _get_jdg()
+_JDG_CACHE: Dict[Tuple[str, str], float] = {}
+_JDG_CACHE_MAX = 128
+
+
+def _jdg_rerank(q, hs, mode: str = "proxy"):
+    mode = (mode or "proxy").lower()
+    if mode == "off":
+        for h in hs:
+            js = float(h.get("score", 0.0))
+            h["_jdg"] = js
+            h["judge01"] = js
+        hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
+        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": "off"}
+
+    use_real = mode == "real"
+    j = _get_jdg() if use_real else None
     if j is None:
         # fallback: use normalized score as judge proxy
         for h in hs:
@@ -616,12 +772,25 @@ def _jdg_rerank(q, hs):
             h["_jdg"] = js
             h["judge01"] = js
         hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
-        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": "proxy_score"}
+        kind = "proxy_score" if mode != "off" else "off"
+        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": kind}
+
     tp = hs[: min(K_JDG, len(hs))]
     pairs = [(q, (h.get("text") or "")[:1200]) for h in tp]
     t0 = time.time()
+    sc = []
     try:
-        sc = j.predict(pairs)
+        for pr in pairs:
+            key = (pr[0], pr[1])
+            if key in _JDG_CACHE:
+                sc.append(_JDG_CACHE[key])
+                continue
+            scr = float(j.predict([pr])[0])
+            sc.append(scr)
+            _JDG_CACHE[key] = scr
+            if len(_JDG_CACHE) > _JDG_CACHE_MAX:
+                # drop arbitrary oldest key
+                _JDG_CACHE.pop(next(iter(_JDG_CACHE)))
     except Exception:
         return hs, {"ok": False, "t": time.time() - t0, "n": len(tp), "kind": "error"}
     t1 = time.time()
@@ -709,7 +878,7 @@ def _near_miss(hs, q, qs=None, use_jdg=USE_JDG_DEFAULT):
         c.sort(key=lambda x: float(x.get("_jdg", -1e9)), reverse=True)
     else:
         c.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
-    return c[:NM_MAX]
+    return c[:NM_MAX], {"threshold": NM_MIN, "used_judge": bool(use_jdg)}
 
 
 def _strip_internal(hs):
@@ -788,7 +957,7 @@ def _calc_confidence(dr):
     return max(0.0, min(1.0, base))
 
 
-def _assemble_context(dr, budget_chars: int = 1400):
+def _assemble_context(dr, budget_chars: int = 1400, budget_tokens: int = 380):
     if not dr:
         return ""
     # deterministic by judge01/score
@@ -803,44 +972,68 @@ def _assemble_context(dr, budget_chars: int = 1400):
             break
         out.append(tx)
         used += len(tx) + 1
-    return "\n\n".join(out)[:budget_chars]
+    ctx = "\n\n".join(out)[:budget_chars]
+    # soft token budget (approx by whitespace tokens)
+    toks = ctx.split()
+    if len(toks) > budget_tokens:
+        ctx = " ".join(toks[:budget_tokens])
+    return ctx
 
 
 def llm_call(prompt: str, cfg: Optional[dict] = None) -> str:
     # placeholder CPU-friendly stub; can be replaced with real model later
     if not prompt:
         return ""
-    return prompt.strip()[:800]
+    cfg = cfg or {}
+    char_budget = int(cfg.get("char_budget", 900))
+    tok_budget = int(cfg.get("tok_budget", 220))
+    p = prompt.strip()[:char_budget]
+    toks = p.split()
+    if len(toks) > tok_budget:
+        p = " ".join(toks[:tok_budget])
+    return p
 
 
 def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
     """Fetch context window for reading mode."""
-    for corp, dbp in getattr(e, "dbp", {}).items():
-        try:
-            con = _db(dbp)
-            cur = con.cursor()
-            rows = cur.execute(
-                """
-                SELECT cid, fp, sec, cidx, tx FROM chunks
-                WHERE fp=? AND cidx BETWEEN ? AND ?
-                ORDER BY cidx
-                """,
-                (fp, int(cidx) - int(window), int(cidx) + int(window)),
-            ).fetchall()
-            con.close()
-            if rows:
-                return [
-                    {"cid": r[0], "fp": r[1], "sec": r[2], "cidx": int(r[3]), "tx": _cap_tx(r[4]), "corp": corp}
-                    for r in rows
-                ]
-        except Exception:
-            continue
-    return []
+    try:
+        chunks = []
+        for corp, dbp in getattr(e, "dbp", {}).items():
+            try:
+                con = _db(dbp)
+                cur = con.cursor()
+                rows = cur.execute(
+                    """
+                    SELECT cid, fp, sec, cidx, tx FROM chunks
+                    WHERE fp=? AND cidx BETWEEN ? AND ?
+                    ORDER BY cidx
+                    """,
+                    (fp, int(cidx) - int(window), int(cidx) + int(window)),
+                ).fetchall()
+                con.close()
+                if rows:
+                    chunks = [
+                        {
+                            "cid": r[0],
+                            "fp": r[1],
+                            "sec": r[2],
+                            "cidx": int(r[3]),
+                            "tx": (r[4] or "")[: HCFG["max_snippet_chars"]],
+                            "corp": corp,
+                        }
+                        for r in rows
+                    ]
+                    break
+            except Exception:
+                continue
+        return {"ok": bool(chunks), "chunks": chunks, "err": None if chunks else "not_found"}
+    except Exception as ex:
+        return {"ok": False, "chunks": [], "err": _safe_msg(ex)}
 
 
 def _log_event(meta, mode, pubs, qlen):
     try:
-        meta["log"] = {
+        payload = {
             "ts": time.time(),
             "mode": mode,
             "scope": pubs,
@@ -849,7 +1042,15 @@ def _log_event(meta, mode, pubs, qlen):
             "flags": dict(meta.get("flags", {})),
             "judge_ok": meta.get("cap", {}).get("judge_ok", False),
             "no_evidence": meta.get("err") is None and meta.get("n", {}).get("direct_hits", 0) == 0,
+            "durations": dict(meta.get("t", {})),
+            "error_id": (meta.get("err") or {}).get("id"),
+            "llm_err": meta.get("err")["msg"] if meta.get("err") and meta.get("err", {}).get("where") == "llm_call" else None,
         }
+        meta["log"] = payload
+        try:
+            logger.info(json.dumps(payload))
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -863,6 +1064,7 @@ def run_query(
     show_nm: bool | None = None,
     jmin: float | None = None,
     use_jdg: bool | None = None,
+    jdg_mode: str | None = None,
     scope=None,
     use_llm: bool | None = None,
     use_vector_mmr: bool | None = None,
@@ -871,6 +1073,9 @@ def run_query(
     t_total = _t0()
     meta = _blank_meta()
     use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
+    jdg_mode = (jdg_mode or "proxy").lower()
+    if not use_jdg_flag:
+        jdg_mode = "off"
     nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
     mode = (mode or "quick").lower()
     meta["cap"]["has_emb"] = e.emb is not None
@@ -891,6 +1096,7 @@ def run_query(
 
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
             meta["t"]["total"] = _dt(t_total)
+            meta["flags"]["llm_bypassed"] = True
             return _mk_ret(
                 ok=False,
                 no_ev=True,
@@ -932,6 +1138,8 @@ def run_query(
         meta["n"]["lex_hits"] = rmeta.get("lex_hits", 0)
         meta["n"]["fetched_dense"] = rmeta.get("fetched_dense", 0)
         meta["n"]["fetched_lex"] = rmeta.get("fetched_lex", 0)
+        meta["n"]["dense_fallback"] = rmeta.get("dense_fallback", 0)
+        meta["n"]["dense_fallback_fail"] = rmeta.get("dense_fallback_fail", 0)
         meta["n"]["cands"] = rmeta.get("cands", 0)
         meta["n"]["pubs_used"] = rmeta.get("pubs_used", 0)
         meta["n"]["pubs_req"] = len(pubs or list(e.corp.keys()))
@@ -960,9 +1168,10 @@ def run_query(
 
         # cutoff
         t_cut = _t0()
-        hs2, _ = _cut(hs, k=K_SHOW, mnk=MNK)
+        hs2, cut_meta = _cut(hs, k=K_SHOW, mnk=MNK)
         meta["t"]["cut"] = _dt(t_cut)
         meta["n"]["after_cut"] = len(hs2)
+        meta["cut_rule"] = cut_meta.get("rule")
 
         if not use_jdg_flag:
             for h in hs2:
@@ -973,11 +1182,13 @@ def run_query(
         disp_use_jdg = False
         t_rerank = _t0()
         if use_jdg_flag:
-            hs2, meta_jdg = _jdg_rerank(q, hs2)
+            hs2, meta_jdg = _jdg_rerank(q, hs2, mode=jdg_mode)
             meta["t"]["rerank"] = _dt(t_rerank)
             disp_use_jdg = bool(meta_jdg.get("ok"))
             meta["cap"]["judge_ok"] = disp_use_jdg
             meta["cap"]["judge_kind"] = meta_jdg.get("kind", "none")
+            if meta_jdg.get("kind") != "cross_encoder":
+                meta["flags"]["veto_disabled"] = True
             veto = False
             if disp_use_jdg:
                 veto, _ = _noev_jdg(hs2)
@@ -1019,26 +1230,33 @@ def run_query(
                 ctx = _assemble_context(dr)
                 prompt = f"Context:\n{ctx}\n\nQuestion: {q}\nAnswer concisely without quotes."
                 try:
-                    ans_txt = llm_call(prompt, cfg={"mode": "quick"})
+                    ans_txt = llm_call(prompt, cfg={"mode": "quick", "char_budget": 900, "tok_budget": 200})
                     meta["flags"]["llm_used"] = True
-                except Exception:
+                except Exception as ex:
                     ans_txt = ""
+                    meta["flags"]["llm_used"] = False
+                    meta["flags"]["llm_bypassed"] = True
+                    meta["err"] = {"where": "llm_call", "msg": _safe_msg(ex), "id": _err_id()}
+            else:
+                meta["flags"]["llm_bypassed"] = True
             meta["t"]["llm"] = _dt(t_llm)
             meta["t"]["total"] = _dt(t_total)
             _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
-        nm_hits = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg) if nm_flag else []
+        nm_hits, nm_meta = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg) if nm_flag else ([], {"threshold": NM_MIN, "used_judge": disp_use_jdg})
         meta["t"]["near_miss"] = _dt(t_nm)
         meta["n"]["near_miss"] = len(nm_hits)
+        meta["meta_nm"] = nm_meta
         meta["t"]["total"] = _dt(t_total)
         meta["conf"] = _calc_confidence(dr if dr else hs3)
+        meta["flags"]["llm_bypassed"] = True
         _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:
-        meta["err"] = {"where": "run_query", "msg": _safe_msg(ex)}
+        meta["err"] = {"where": "run_query", "msg": _safe_msg(ex), "id": _err_id()}
         meta["t"]["total"] = _dt(t_total)
         _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)

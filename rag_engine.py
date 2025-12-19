@@ -379,14 +379,19 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
     # lightweight de-dupe by (book, section) to improve diversity
     seen = set()
     out = []
-    for x in cands:
-        k2 = (x.get("book"), x.get("section"))
-        if k2 in seen:
-            continue
-        seen.add(k2)
-        out.append(x)
-        if len(out) >= k:
+    for s in sents:
+        out.append(s)
+        if len(out) >= max_sent or len(" ".join(out)) >= target_chars:
             break
+    if len(out) < min_sent and len(sents) > len(out):
+        out.append(sents[len(out)])
+    return " ".join(out)[:target_chars].rstrip()
+
+
+def _safe_msg(ex, max_len: int = 200) -> str:
+    msg = f"{type(ex).__name__}: {ex}"
+    msg = msg.replace("\n", " ")[:max_len]
+    return msg
 
     meta["cands"] = len(cands)
     return out, meta
@@ -438,7 +443,7 @@ def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: 
 def _cut(hs, k=K_SHOW, mnk=MNK):
     if not hs:
         return hs, {"kept": 0, "all": 0, "rule": "empty"}
-    hs = sorted(hs, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    hs = sorted(hs, key=lambda x: (-float(x.get("score", 0.0)), str(x.get("fp", "")), str(x.get("sec", "")), str(x.get("cid", ""))))
     tp = hs[: max(k, mnk)]
     out = tp
     return out, {

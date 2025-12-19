@@ -19,6 +19,10 @@ def _mk_eng():
     return re._mk_eng()
 
 
+def _ui_error(message: str, err_id: str | None = None, details: str | None = None):
+    return {"message": message, "id": err_id, "details": details}
+
+
 def _run(eng, q: str):
     ss = st.session_state
     pubs = ss.get("pubs", [])
@@ -38,7 +42,7 @@ def _run(eng, q: str):
     ss["last_q"] = q
     if rr.get("meta", {}).get("err"):
         err = rr["meta"]["err"]
-        ss["_ui_err"] = f"Retrieval/LLM issue ({err.get('id')}). Try again. Details: {err.get('msg')}"
+        ss["_ui_err"] = _ui_error("Retrieval/LLM issue", err.get("id"), err.get("msg"))
     else:
         ss["_ui_err"] = None
 
@@ -52,7 +56,7 @@ def _on_search():
         _run(ss["eng"], q)
         us.qp_set(q=q)
     except Exception as e:
-        ss["_ui_err"] = f"Search failed: {type(e).__name__}: {e}"
+        ss["_ui_err"] = _ui_error("Search failed", re._err_id("ui_shell", e), f"{type(e).__name__}: {e}")
 
 
 def main():

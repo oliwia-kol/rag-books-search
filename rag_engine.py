@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import hashlib
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 import re
@@ -294,25 +295,6 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
         reports[k] = rep
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
-
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        if not dim_ok:
-            rep.setdefault("reasons", []).append("embed_dim_mismatch")
-        reports[k] = rep
-
-def get_startup_report(e: Eng) -> Dict[str, Any]:
-    return {
-        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
-        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
-        "corp": getattr(e, "corp_status", {}),
-    }
-
 
 def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
     rows = []
@@ -686,8 +668,44 @@ def _safe_msg(ex, max_len: int = 200) -> str:
     return msg
 
 
-def _err_id() -> str:
-    return f"err-{int(time.time() * 1000)}"
+def _err_id(where: str = "", ex: Exception | str | None = None) -> str:
+    base = str(where or "err")
+    if isinstance(ex, Exception):
+        base += f":{type(ex).__name__}:{ex}"
+    elif ex:
+        base += f":{ex}"
+    try:
+        digest = hashlib.sha256(base.encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        digest = hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()  # noqa: S324
+    return f"err-{digest[:12]}"
+
+
+def _query_logger():
+    lg = logging.getLogger("rag_engine.query")
+    if getattr(_query_logger, "_configured", False):
+        return lg
+
+    lg.setLevel(logging.INFO)
+    lg.propagate = False
+    fmt = logging.Formatter("%(message)s")
+    stream_h = logging.StreamHandler()
+    stream_h.setFormatter(fmt)
+    lg.addHandler(stream_h)
+
+    fp = os.environ.get("RAG_QUERY_LOG_PATH")
+    if fp:
+        try:
+            max_bytes = int(os.environ.get("RAG_QUERY_LOG_MAX_BYTES", 2_000_000))
+            backup_count = int(os.environ.get("RAG_QUERY_LOG_BACKUP_COUNT", 3))
+            file_h = RotatingFileHandler(fp, maxBytes=max_bytes, backupCount=backup_count)
+            file_h.setFormatter(fmt)
+            lg.addHandler(file_h)
+        except Exception:
+            pass
+
+    _query_logger._configured = True
+    return lg
 
 
 def _blank_meta():
@@ -700,13 +718,6 @@ def _blank_meta():
     cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
     return {"t": {k: 0.0 for k in META_T_KEYS}, "n": {k: 0 for k in META_N_KEYS}, "cap": cap, "flags": flags, "err": None, "log": {}}
-
-
-def get_startup_report(eng: Eng) -> Dict[str, Any]:
-    rep = getattr(eng, "corp_report", {}) or {}
-    ok = [k for k, v in rep.items() if v.get("ok")]
-    fail = [k for k in rep.keys() if k not in ok]
-    return {"ok": ok, "fail": fail, "by_corpus": rep}
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):
@@ -1033,22 +1044,38 @@ def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
 
 def _log_event(meta, mode, pubs, qlen):
     try:
+        err = meta.get("err") or {}
         payload = {
             "ts": time.time(),
             "mode": mode,
-            "scope": pubs,
+            "scope": {
+                "requested": list(pubs or []),
+                "used": meta.get("n", {}).get("pubs_used", 0),
+                "available": meta.get("cap", {}).get("corp_available", []),
+            },
             "qlen": int(qlen or 0),
             "counts": dict(meta.get("n", {})),
-            "flags": dict(meta.get("flags", {})),
-            "judge_ok": meta.get("cap", {}).get("judge_ok", False),
-            "no_evidence": meta.get("err") is None and meta.get("n", {}).get("direct_hits", 0) == 0,
             "durations": dict(meta.get("t", {})),
-            "error_id": (meta.get("err") or {}).get("id"),
-            "llm_err": meta.get("err")["msg"] if meta.get("err") and meta.get("err", {}).get("where") == "llm_call" else None,
+            "flags": dict(meta.get("flags", {})),
+            "judge": {
+                "requested": meta.get("cap", {}).get("judge_requested", False),
+                "ok": meta.get("cap", {}).get("judge_ok", False),
+                "kind": meta.get("cap", {}).get("judge_kind", "none"),
+            },
+            "no_evidence": meta.get("n", {}).get("direct_hits", 0) == 0,
+            "clamp": {
+                "k_requested": meta.get("cap", {}).get("k_requested"),
+                "k_applied": meta.get("cap", {}).get("k_applied"),
+                "k_clamped": meta.get("cap", {}).get("k_clamped", False),
+                "dense": meta.get("flags", {}).get("dense_clamped", False),
+                "lex": meta.get("flags", {}).get("lex_clamped", False),
+            },
+            "error_id": err.get("id"),
+            "llm_err": {"msg": err.get("msg"), "duration": meta.get("t", {}).get("llm", 0.0)} if err.get("where") == "llm_call" else None,
         }
         meta["log"] = payload
         try:
-            logger.info(json.dumps(payload))
+            _query_logger().info(json.dumps(payload))
         except Exception:
             pass
     except Exception:
@@ -1089,6 +1116,7 @@ def run_query(
     meta["cap"]["judge_ok"] = False
     meta["cap"]["judge_kind"] = "none"
     meta["cap"]["corp_available"] = list(getattr(e, "corp", {}).keys())
+    pub_scope = list(scope or pubs or meta["cap"]["corp_available"])
 
     try:
         qs = set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
@@ -1097,6 +1125,7 @@ def run_query(
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
             meta["t"]["total"] = _dt(t_total)
             meta["flags"]["llm_bypassed"] = True
+            _log_event(meta, mode, pub_scope, len(q))
             return _mk_ret(
                 ok=False,
                 no_ev=True,
@@ -1149,6 +1178,8 @@ def run_query(
         meta["cap"]["k_requested"] = rmeta.get("k_requested")
         meta["cap"]["k_applied"] = rmeta.get("k_applied")
         meta["cap"]["k_clamped"] = bool(rmeta.get("k_clamped"))
+        meta["flags"]["dense_clamped"] = meta["flags"]["dense_clamped"] or bool(rmeta.get("dense_clamped"))
+        meta["flags"]["lex_clamped"] = meta["flags"]["lex_clamped"] or bool(rmeta.get("lex_clamped"))
         # mode-aware clamp for quick vs deep
         if mode.startswith("deep"):
             pass
@@ -1236,12 +1267,12 @@ def run_query(
                     ans_txt = ""
                     meta["flags"]["llm_used"] = False
                     meta["flags"]["llm_bypassed"] = True
-                    meta["err"] = {"where": "llm_call", "msg": _safe_msg(ex), "id": _err_id()}
+                    meta["err"] = {"where": "llm_call", "msg": _safe_msg(ex), "id": _err_id("llm_call", ex)}
             else:
                 meta["flags"]["llm_bypassed"] = True
             meta["t"]["llm"] = _dt(t_llm)
             meta["t"]["total"] = _dt(t_total)
-            _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+            _log_event(meta, mode, pub_scope, len(q))
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
@@ -1252,11 +1283,11 @@ def run_query(
         meta["t"]["total"] = _dt(t_total)
         meta["conf"] = _calc_confidence(dr if dr else hs3)
         meta["flags"]["llm_bypassed"] = True
-        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+        _log_event(meta, mode, pub_scope, len(q))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:
-        meta["err"] = {"where": "run_query", "msg": _safe_msg(ex), "id": _err_id()}
+        meta["err"] = {"where": "run_query", "msg": _safe_msg(ex), "id": _err_id("run_query", ex)}
         meta["t"]["total"] = _dt(t_total)
-        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+        _log_event(meta, mode, pub_scope, len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)

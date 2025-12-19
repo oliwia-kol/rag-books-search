@@ -52,20 +52,40 @@ def toast_flush():
         ss["_toast"] = None
 
 
+def _normalize_ui_err(err):
+    if not err:
+        return None
+    if isinstance(err, str):
+        return {"message": err, "id": None, "details": None}
+    if isinstance(err, dict):
+        return {
+            "message": err.get("message") or err.get("msg") or err.get("headline") or "Something went wrong",
+            "id": err.get("id"),
+            "details": err.get("details") or err.get("msg"),
+        }
+    return None
+
+
 def global_error_box():
     ss = st.session_state
-    err = ss.get("_ui_err")
+    err = _normalize_ui_err(ss.get("_ui_err"))
     if not err:
         return
     with st.container(border=True):
-        st.error(err)
+        headline = err["message"]
+        if err.get("id"):
+            headline = f"{headline} (error ID: {err['id']})"
+        st.error(headline)
+        if err.get("details"):
+            st.caption(err["details"])
+        st.caption("Retry your query or reload the page. If the issue keeps happening, share the error ID so we can trace it.")
         c1, c2 = st.columns([0.75, 0.25])
         with c2:
             if st.button("Dismiss", key="err_dismiss"):
                 ss["_ui_err"] = None
                 st.rerun()
         with c1:
-            st.caption("If this persists, reload the page and retry the query. Error IDs help with debugging.")
+            st.caption("You can continue browsing while we handle this in the background.")
 
 
 def cb_clear():
@@ -103,16 +123,17 @@ def sidebar(eng=None, startup_report=None):
         st.toggle("Advanced", key="adv")
 
         if eng is not None:
-            rep = re.get_startup_report(eng)
-            ok = rep.get("ok", [])
-            fail = rep.get("fail", [])
+            startup_report = startup_report or re.get_startup_report(eng)
+            ok = [r.get("publisher") for r in startup_report if r.get("ready")]
+            fail = [r.get("publisher") for r in startup_report if not r.get("ready")]
             st.caption(f"Startup: loaded {len(ok)} / {len(ok)+len(fail)} corpora")
             if fail:
                 with st.expander("Corpus status", expanded=False):
-                    for k, v in rep.get("by_corpus", {}).items():
-                        emoji = "✅" if v.get("ok") else "⚠️"
-                        reasons = ", ".join(v.get("reasons", []))
-                        st.write(f"{emoji} {k}: dense_loaded={v.get('dense_loaded')} db_loaded={v.get('db_loaded')} dim_ok={v.get('dim_ok')} {reasons}")
+                    for row in startup_report:
+                        emoji = "✅" if row.get("ready") else "⚠️"
+                        rep = eng.corp_report.get(row.get("publisher"), {}) if eng else {}
+                        reasons = ", ".join(rep.get("reasons", [])) or row.get("reason", "")
+                        st.write(f"{emoji} {row.get('publisher')}: dense_loaded={row.get('loaded_dense')} db_loaded={row.get('loaded_db')} dim_ok={rep.get('dim_ok')} {reasons}")
 
         st.caption("Publisher scope")
         # multi-select pills-ish

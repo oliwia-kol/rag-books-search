@@ -27,7 +27,7 @@ def main():
     re_mod = importlib.import_module("rag_engine")
 
     _has(us, ["init_state", "sidebar", "global_error_box", "toast_flush", "qp_get", "qp_set", "cb_clear"])
-    _has(ua, ["render_answer", "render_conf", "render_context_panel", "render_evidence_list"])
+    _has(ua, ["render_answer", "render_conf", "render_context_panel", "render_evidence_list", "render_power_panel"])
     _has(ut, ["apply_theme"])
     _has(re_mod, ["_mk_eng", "run_query", "Eng", "get_startup_report"])
 
@@ -101,8 +101,24 @@ def main():
         raise AssertionError("error path should annotate err.where=run_query")
 
     # no direct evidence path
-    def fake_retrieve(e, q, pubs=None, qv=None):
-        return [{"cid": "c", "fp": "f", "sec": "s", "tx": "t", "cidx": 0, "score": 0.5}], {"dense_hits": 0, "lex_hits": 1, "cands": 1, "pubs_used": 1, "t_dense": 0.0, "t_lex": 0.0}
+    def fake_retrieve(e, q, pubs=None, qv=None, **kwargs):
+        return [
+            {"cid": "c", "fp": "f", "sec": "s", "tx": "t", "cidx": 0, "score": 0.5, "sem_score_n": 0.5, "lex_score_n": 0.5}
+        ], {
+            "dense_hits": 0,
+            "lex_hits": 1,
+            "cands": 1,
+            "pubs_used": 1,
+            "t_dense": 0.0,
+            "t_lex": 0.0,
+            "k_requested": kwargs.get("k", 10),
+            "k_applied": kwargs.get("k", 10),
+            "k_clamped": False,
+            "dense_clamped": False,
+            "lex_clamped": False,
+            "fallback_retries": 0,
+            "fallback_failed": 0,
+        }
 
     orig_retrieve = re_mod.hybrid_retrieve
     re_mod.hybrid_retrieve = fake_retrieve

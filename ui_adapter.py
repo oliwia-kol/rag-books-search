@@ -199,6 +199,37 @@ def _rank_key(h: Dict[str, Any]) -> float:
     return _j01(h)
 
 
+def _table(rows: List[Dict[str, Any]], label: str, help_text: str | None = None):
+    if not rows:
+        return
+    st.caption(label)
+    if help_text:
+        st.caption(help_text)
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def _hit_rows(hits: List[Dict[str, Any]]):
+    rows = []
+    for i, h in enumerate(hits[:8]):
+        rows.append(
+            {
+                "hit": _cid(h) or f"h{i+1}",
+                "sem": round(float(h.get("sem_score_n", 0.0)), 3),
+                "lex": round(float(h.get("lex_score_n", 0.0)), 3),
+                "judge01": round(_j01(h), 3),
+                "score": round(_score(h), 3),
+            }
+        )
+    return rows
+
+
+def _kv_rows(m: Dict[str, Any]):
+    rows = []
+    for k, v in (m or {}).items():
+        rows.append({"key": k, "value": v})
+    return rows
+
+
 def render_answer(rr: Dict[str, Any]):
     ans = (rr or {}).get("answer") or ""
     with st.container(border=True):
@@ -246,6 +277,39 @@ def render_conf(rr: Dict[str, Any]):
         st.caption(f"Books: {books} | Sections: {secs}")
         if books <= 1:
             st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
+
+
+def render_power_panel(rr: Dict[str, Any]):
+    meta = (rr or {}).get("meta") or {}
+    hits = rr.get("hits", []) if isinstance(rr, dict) else []
+    mode_params = meta.get("mode_params", {})
+    with st.expander("Power panel", expanded=False):
+        st.caption(
+            f"Mode • {mode_params.get('label', mode_params.get('key', 'Quick'))} • final_k={mode_params.get('final_k')} mmr_k={mode_params.get('mmr_k')}"
+        )
+        if meta.get("cut_rule"):
+            st.caption(f"Cutoff rule: {meta.get('cut_rule')}")
+        _table(_hit_rows(hits), "Top-hit scores (sem / lex / judge01)", "First 8 hits after display filter.")
+
+        timings = [{"stage": k, "s": round(float(v), 3)} for k, v in (meta.get("t") or {}).items()]
+        flags = [{"flag": k, "value": bool(v)} for k, v in (meta.get("flags") or {}).items()]
+        caps = []
+        cap = meta.get("cap", {})
+        for key in ["k_requested", "k_applied", "k_clamped", "judge_kind"]:
+            caps.append({"cap": key, "value": cap.get(key)})
+        caps.append({"cap": "dense_reason", "value": cap.get("dense_reason")})
+        caps.append({"cap": "corp_available", "value": ", ".join(cap.get("corp_available", []))})
+
+        cols = st.columns(3)
+        with cols[0]:
+            _table(timings, "Stage timings (s)")
+        with cols[1]:
+            _table(flags, "Flags")
+        with cols[2]:
+            _table(caps, "Caps / clamps")
+
+        _table(_kv_rows(mode_params), "Mode parameters")
+        _table(_kv_rows(meta.get("meta_nm", {})), "Near-miss meta")
 
 
 def render_context_panel():

@@ -22,6 +22,8 @@ def init_state():
 
     # stable defaults
     ss.setdefault("adv", False)
+    ss.setdefault("mode", re.MODE_DEFAULT)
+    ss.setdefault("mode_label", re.MODE_CFG.get(re.MODE_DEFAULT, {}).get("label", "Quick"))
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
     ss.setdefault("srt", "Best evidence")
     ss.setdefault("nm", True)          # show near-miss when ok=True
@@ -99,11 +101,13 @@ def _pin_lbl(p: dict) -> str:
 
 def sidebar(eng=None, startup_report=None):
     ss = st.session_state
+    startup_rep = startup_report if isinstance(startup_report, dict) else (re.get_startup_report(eng) if eng is not None else {})
+    rows = startup_rep.get("rows") if isinstance(startup_rep, dict) else (startup_report or [])
     with st.sidebar:
         st.toggle("Advanced", key="adv")
 
         if eng is not None:
-            rep = re.get_startup_report(eng)
+            rep = startup_rep if isinstance(startup_rep, dict) else re.get_startup_report(eng)
             ok = rep.get("ok", [])
             fail = rep.get("fail", [])
             st.caption(f"Startup: loaded {len(ok)} / {len(ok)+len(fail)} corpora")
@@ -113,6 +117,24 @@ def sidebar(eng=None, startup_report=None):
                         emoji = "✅" if v.get("ok") else "⚠️"
                         reasons = ", ".join(v.get("reasons", []))
                         st.write(f"{emoji} {k}: dense_loaded={v.get('dense_loaded')} db_loaded={v.get('db_loaded')} dim_ok={v.get('dim_ok')} {reasons}")
+
+        st.caption("Mode")
+        mode_keys = list(re.MODE_CFG.keys())
+        mode_labels = [re.MODE_CFG[m].get("label", m.title()) for m in mode_keys]
+        try:
+            idx = mode_keys.index(ss.get("mode", re.MODE_DEFAULT))
+        except ValueError:
+            idx = 0
+        selection = st.selectbox(
+            "",
+            options=list(zip(mode_labels, mode_keys)),
+            format_func=lambda x: x[0],
+            index=idx,
+            label_visibility="collapsed",
+            key="mode_picker",
+        )
+        ss["mode_label"], ss["mode"] = selection
+        st.caption(f"Active mode: {ss['mode_label']}")
 
         st.caption("Publisher scope")
         # multi-select pills-ish
@@ -183,10 +205,10 @@ def sidebar(eng=None, startup_report=None):
         st.divider()
 
         st.subheader("Startup status")
-        if not startup_report:
+        if not rows:
             st.caption("No corpus status available.")
         else:
-            for row in startup_report:
+            for row in rows:
                 ready = bool(row.get("ready"))
                 color = "#2aa865" if ready else "#d23030"
                 reason = "Ready" if ready else (row.get("reason") or "Unavailable")

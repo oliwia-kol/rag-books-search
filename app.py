@@ -33,6 +33,7 @@ def _run(eng, q: str):
         show_nm=bool(ss.get("nm", True)),
         nm=not bool(ss.get("nm_skip", False)),
         jmin=float(ss.get("jmin", 0.45)),
+        mode=ss.get("mode", re.MODE_DEFAULT),
     )
     ss["res"] = rr
     ss["last_q"] = q
@@ -76,7 +77,8 @@ def main():
     us.toast_flush()
 
     st.title("RAG Books Search")
-    st.caption("evidence-first • judge ON • CPU-friendly")
+    mode_label = ss.get("mode_label", "Quick")
+    st.caption(f"evidence-first • judge ON • CPU-friendly • Mode: {mode_label}")
 
     with st.form("q_form", clear_on_submit=False):
         st.text_input(
@@ -94,6 +96,7 @@ def main():
 
     ua.render_answer(rr)
     ua.render_conf(rr)
+    ua.render_power_panel(rr)
     ua.render_context_panel()
     ua.render_evidence_list(rr, q=ss.get("last_q", ""))
     ua.render_near_miss(rr, q=ss.get("last_q", ""))

@@ -90,10 +90,32 @@ HCFG = {
     "lex_k": 30,
     "fusion_dense_w": 0.65,
     "fusion_lex_w": 0.35,
-    "max_snippet_chars": 850,
+    "max_snippet_chars": 4000,
     "max_ctx_chars": 1400,
     "max_prompt_chars": 2000,
 }
+
+MODE_CFG = {
+    "quick": {
+        "label": "Quick",
+        "final_k": 8,
+        "mmr_k": 16,
+        "ctx_chars": 900,
+        "ctx_tokens": 220,
+        "use_jdg": True,
+        "jdg_mode": "proxy",
+    },
+    "quote": {
+        "label": "Find Exact Quote",
+        "final_k": 14,
+        "mmr_k": 26,
+        "ctx_chars": 1600,
+        "ctx_tokens": 360,
+        "use_jdg": True,
+        "jdg_mode": "real",
+    },
+}
+MODE_DEFAULT = "quick"
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
 
@@ -295,51 +317,6 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
 
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        if not dim_ok:
-            rep.setdefault("reasons", []).append("embed_dim_mismatch")
-        reports[k] = rep
-
-def get_startup_report(e: Eng) -> Dict[str, Any]:
-    return {
-        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
-        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
-        "corp": getattr(e, "corp_status", {}),
-    }
-
-
-def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
-    rows = []
-    for pub in CORP.keys():
-        rep = eng.corp_report.get(pub, {})
-        ready = all(
-            [
-                rep.get("exists"),
-                rep.get("faiss"),
-                rep.get("db"),
-                rep.get("manifest"),
-                rep.get("dense_loaded"),
-                rep.get("db_loaded"),
-                rep.get("dim_ok"),
-            ]
-        )
-        rows.append(
-            {
-                "publisher": pub,
-                "loaded_dense": bool(rep.get("dense_loaded")),
-                "loaded_db": bool(rep.get("db_loaded")),
-                "ready": bool(ready),
-                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
-            }
-        )
-    return rows
-
 
 def _db(con_p: Path) -> sqlite3.Connection:
     # Streamlit can run multiple threads; allow cross-thread connections.
@@ -365,14 +342,18 @@ def _normalize_query(qv: np.ndarray) -> np.ndarray:
 
 
 def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
-    meta = {"fallback_used": 0, "fallback_failed": 0, "clamped_k": False}
+    try:
+        k_req = max(1, int(k))
+    except Exception:
+        k_req = 1
+    meta = {"fallback_used": 0, "fallback_failed": 0, "fallback_retries": 0, "clamped_k": False, "k_requested": k_req}
     if qv.size == 0:
         return [], meta
     if corp not in e.ix or corp not in e.dbp:
         return [], meta
     ix = e.ix[corp]
     try:
-        k_applied = max(1, min(int(k), HCFG["faiss_fetch_k"]))
+        k_applied = max(1, min(int(k_req), HCFG["faiss_fetch_k"]))
     except Exception:
         k_applied = max(1, HCFG["faiss_fetch_k"])
     meta["k_applied"] = k_applied
@@ -522,15 +503,22 @@ def fts_search(e: Eng, corp: str, q: str, k: int):
 
 def dense_retrieve(e: Eng, corp: str, qv: np.ndarray, k: int | None = None):
     k_req = k or HCFG["faiss_fetch_k"]
+    base_meta = {
+        "fallback_retries": 0,
+        "fallback_failed": 0,
+        "k_requested": k_req,
+        "k_applied": k_req,
+        "k_clamped": False,
+    }
     if corp not in e.ix:
-        return [], {"fallback_retries": 0, "fallback_failed": 0, "k_requested": k_req, "k_applied": k_req, "k_clamped": False}
+        return [], base_meta
     if qv.size == 0:
-        return [], {"fallback_retries": 0, "fallback_failed": 0, "k_requested": k_req, "k_applied": k_req, "k_clamped": False}
+        return [], base_meta
     rows, meta = faiss_search(e, corp, qv, k_req)
     norm_scores(rows, "sem_score")
     for r in rows:
         r.setdefault("score", r.get("sem_score_n", 0.0))
-    return rows, meta
+    return rows, {**base_meta, **meta}
 
 
 def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
@@ -547,19 +535,26 @@ def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
     norm_scores(rows, "lex_score")
     for r in rows:
         r.setdefault("score", r.get("lex_score_n", 0.0))
-    return rows, {"clamped_k": clamp_flag}
+    return rows, {"clamped_k": clamp_flag, "k_requested": k or k_use, "k_applied": k_use}
 
 
-def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.ndarray | None = None):
+def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.ndarray | None = None, cfg: Optional[Dict[str, Any]] = None):
     """Dense+lexical hybrid retrieval across selected publishers."""
+    cfg = cfg or {}
     if qv is None:
         qv = embed_query(e, q)
     use_dense = qv.size > 0
     try:
         k_requested = int(k)
     except Exception:
-        k_requested = HCFG["final_k"]
-    k_applied = max(1, min(k_requested, HCFG["mmr_k"]))
+        k_requested = cfg.get("final_k", HCFG["final_k"])
+    mmr_k = cfg.get("mmr_k", HCFG["mmr_k"])
+    dense_k = cfg.get("dense_k", HCFG["dense_k"])
+    lex_k = cfg.get("lex_k", HCFG["lex_k"])
+    fusion_dense_w = cfg.get("fusion_dense_w", HCFG["fusion_dense_w"])
+    fusion_lex_w = cfg.get("fusion_lex_w", HCFG["fusion_lex_w"])
+
+    k_applied = max(1, min(k_requested, mmr_k))
 
     pubs = pubs or list(e.corp.keys())
     cands = []
@@ -576,6 +571,11 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         "k_clamped": k_applied != k_requested,
         "fallback_retries": 0,
         "fallback_failed": 0,
+        "dense_fallback": 0,
+        "dense_fallback_fail": 0,
+        "dense_clamped": False,
+        "lex_clamped": False,
+        "mmr_k": mmr_k,
     }
 
     for corp in pubs:
@@ -584,15 +584,16 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
 
         t_d0 = _t0()
         if use_dense:
-            d, d_meta = dense_retrieve(e, corp, qv, k=HCFG["dense_k"])
+            d, d_meta = dense_retrieve(e, corp, qv, k=dense_k)
             meta["fallback_retries"] += d_meta.get("fallback_retries", 0)
             meta["fallback_failed"] += d_meta.get("fallback_failed", 0)
             meta["k_clamped"] = meta["k_clamped"] or bool(d_meta.get("k_clamped"))
+            meta["dense_clamped"] = meta["dense_clamped"] or d_meta.get("k_clamped", False)
         else:
             d, d_meta = [], {"k_clamped": False}
         meta["t_dense"] += _dt(t_d0)
         t_l0 = _t0()
-        l, lmeta = lex_retrieve(e, corp, q, k=HCFG["lex_k"])
+        l, lmeta = lex_retrieve(e, corp, q, k=lex_k)
         meta["t_lex"] += _dt(t_l0)
 
         meta["dense_hits"] += len(d)
@@ -600,9 +601,8 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         meta["fetched_dense"] += len(d)
         meta["fetched_lex"] += len(l)
         meta["pubs_used"] += 1
-        meta["dense_fallback"] += dmeta.get("fallback_used", 0)
-        meta["dense_fallback_fail"] += dmeta.get("fallback_failed", 0)
-        meta["dense_clamped"] = meta["dense_clamped"] or dmeta.get("clamped_k", False)
+        meta["dense_fallback"] += d_meta.get("fallback_used", 0)
+        meta["dense_fallback_fail"] += d_meta.get("fallback_failed", 0)
         meta["lex_clamped"] = meta["lex_clamped"] or lmeta.get("clamped_k", False)
 
         dd = {x["cid"]: x for x in d}
@@ -630,7 +630,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             ls = float(b.get("lex_score_n", 0.0))
             row["sem_score_n"] = ss
             row["lex_score_n"] = ls
-            row["score"] = HCFG["fusion_dense_w"] * ss + HCFG["fusion_lex_w"] * ls
+            row["score"] = fusion_dense_w * ss + fusion_lex_w * ls
             cands.append(row)
 
     cands.sort(key=lambda z: float(z.get("score", 0.0)), reverse=True)
@@ -649,13 +649,13 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             continue
         pub = h.get("corp") or h.get("publisher")
         per_pub.setdefault(pub, 0)
-        if per_pub[pub] >= max(2, k // 2):
+        if per_pub[pub] >= max(2, k_applied // 2):
             continue
         per_pub[pub] += 1
         for s in sigs:
             seen.add(s)
         out.append(h)
-        if len(out) >= HCFG["mmr_k"]:
+        if len(out) >= mmr_k:
             break
 
     meta["cands"] = len(cands)
@@ -706,7 +706,36 @@ def get_startup_report(eng: Eng) -> Dict[str, Any]:
     rep = getattr(eng, "corp_report", {}) or {}
     ok = [k for k, v in rep.items() if v.get("ok")]
     fail = [k for k in rep.keys() if k not in ok]
-    return {"ok": ok, "fail": fail, "by_corpus": rep}
+    rows = []
+    for pub in CORP.keys():
+        row_rep = rep.get(pub, {})
+        ready = all(
+            [
+                row_rep.get("exists"),
+                row_rep.get("faiss"),
+                row_rep.get("db"),
+                row_rep.get("manifest"),
+                row_rep.get("dense_loaded"),
+                row_rep.get("db_loaded"),
+                row_rep.get("dim_ok"),
+            ]
+        )
+        rows.append(
+            {
+                "publisher": pub,
+                "loaded_dense": bool(row_rep.get("dense_loaded")),
+                "loaded_db": bool(row_rep.get("db_loaded")),
+                "ready": bool(ready),
+                "reason": "" if ready else (row_rep.get("failure_reason") or "unavailable"),
+            }
+        )
+    return {
+        "ok": ok,
+        "fail": fail,
+        "by_corpus": rep,
+        "rows": rows,
+        "embed_dim": getattr(getattr(eng, "emb", None), "get_sentence_embedding_dimension", lambda: None)(),
+    }
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):
@@ -1036,6 +1065,7 @@ def _log_event(meta, mode, pubs, qlen):
         payload = {
             "ts": time.time(),
             "mode": mode,
+            "mode_params": meta.get("mode_params", {}),
             "scope": pubs,
             "qlen": int(qlen or 0),
             "counts": dict(meta.get("n", {})),
@@ -1055,6 +1085,23 @@ def _log_event(meta, mode, pubs, qlen):
         pass
 
 
+def _mode_settings(mode: Optional[str] = None) -> Dict[str, Any]:
+    key = (mode or MODE_DEFAULT).lower().replace(" ", "_")
+    if key.startswith("find"):
+        key = "quote"
+    cfg = MODE_CFG.get(key, MODE_CFG[MODE_DEFAULT])
+    return {
+        "key": key,
+        "label": cfg.get("label", key.title()),
+        "final_k": cfg.get("final_k", HCFG["final_k"]),
+        "mmr_k": cfg.get("mmr_k", HCFG["mmr_k"]),
+        "ctx_chars": cfg.get("ctx_chars", HCFG["max_ctx_chars"]),
+        "ctx_tokens": cfg.get("ctx_tokens", 380),
+        "use_jdg": cfg.get("use_jdg", True),
+        "jdg_mode": cfg.get("jdg_mode", "proxy"),
+    }
+
+
 def run_query(
     e: Eng,
     q: str,
@@ -1072,12 +1119,24 @@ def run_query(
 ):
     t_total = _t0()
     meta = _blank_meta()
-    use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
-    jdg_mode = (jdg_mode or "proxy").lower()
+    mode_cfg = _mode_settings(mode)
+    meta["mode"] = mode_cfg["key"]
+    meta["mode_params"] = {
+        "label": mode_cfg["label"],
+        "final_k": mode_cfg["final_k"],
+        "mmr_k": mode_cfg["mmr_k"],
+        "ctx_chars": mode_cfg["ctx_chars"],
+        "ctx_tokens": mode_cfg["ctx_tokens"],
+        "use_jdg": mode_cfg["use_jdg"] if use_jdg is None else bool(use_jdg),
+        "jdg_mode": (jdg_mode or mode_cfg["jdg_mode"]).lower() if jdg_mode or mode_cfg.get("jdg_mode") else "proxy",
+    }
+    use_jdg_flag = bool(meta["mode_params"]["use_jdg"])
+    jdg_mode = meta["mode_params"]["jdg_mode"]
     if not use_jdg_flag:
         jdg_mode = "off"
+        meta["mode_params"]["jdg_mode"] = "off"
     nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
-    mode = (mode or "quick").lower()
+    mode = mode_cfg["key"]
     meta["cap"]["has_emb"] = e.emb is not None
     meta["cap"]["dense_ok"] = bool(getattr(e, "ix", {}))
     if not meta["cap"]["has_emb"]:
@@ -1130,7 +1189,21 @@ def run_query(
 
         # retrieve
         t_ret_dense_lex = _t0()
-        hs, rmeta = hybrid_retrieve(e, q, pubs=pubs, qv=qv)
+        hs, rmeta = hybrid_retrieve(
+            e,
+            q,
+            pubs=pubs,
+            qv=qv,
+            k=mode_cfg["final_k"],
+            cfg={
+                "final_k": mode_cfg["final_k"],
+                "mmr_k": mode_cfg["mmr_k"],
+                "dense_k": HCFG["dense_k"],
+                "lex_k": HCFG["lex_k"],
+                "fusion_dense_w": HCFG["fusion_dense_w"],
+                "fusion_lex_w": HCFG["fusion_lex_w"],
+            },
+        )
         meta["t"]["dense"] = rmeta.get("t_dense", 0.0)
         meta["t"]["lex"] = rmeta.get("t_lex", 0.0)
         meta["t"]["fuse"] = _dt(t_ret_dense_lex) - meta["t"]["dense"] - meta["t"]["lex"]
@@ -1146,14 +1219,11 @@ def run_query(
         meta["n"]["fallback_retries"] = rmeta.get("fallback_retries", 0)
         meta["n"]["fallback_failed"] = rmeta.get("fallback_failed", 0)
         meta["flags"]["lex_used"] = meta["n"]["lex_hits"] > 0 or bool(getattr(e, "dbp", {}))
+        meta["flags"]["dense_clamped"] = meta["flags"]["dense_clamped"] or bool(rmeta.get("dense_clamped"))
+        meta["flags"]["lex_clamped"] = meta["flags"]["lex_clamped"] or bool(rmeta.get("lex_clamped"))
         meta["cap"]["k_requested"] = rmeta.get("k_requested")
         meta["cap"]["k_applied"] = rmeta.get("k_applied")
         meta["cap"]["k_clamped"] = bool(rmeta.get("k_clamped"))
-        # mode-aware clamp for quick vs deep
-        if mode.startswith("deep"):
-            pass
-        else:
-            hs = hs[: HCFG["final_k"]]
 
         # sort preference (UI-level)
         s = (sort or "").strip().lower()
@@ -1227,7 +1297,7 @@ def run_query(
             t_llm = _t0()
             ans_txt = ""
             if use_llm:
-                ctx = _assemble_context(dr)
+                ctx = _assemble_context(dr, budget_chars=mode_cfg["ctx_chars"], budget_tokens=mode_cfg["ctx_tokens"])
                 prompt = f"Context:\n{ctx}\n\nQuestion: {q}\nAnswer concisely without quotes."
                 try:
                     ans_txt = llm_call(prompt, cfg={"mode": "quick", "char_budget": 900, "tok_budget": 200})

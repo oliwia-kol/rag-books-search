@@ -35,7 +35,26 @@ def patch_embed(monkeypatch):
 
 def test_dense_only(monkeypatch):
     eng = FakeEng()
-    monkeypatch.setattr(re, "hybrid_retrieve", lambda e, q, pubs=None, qv=None: (_mk_hits("dense"), {"dense_hits": 1, "lex_hits": 0, "fetched_dense": 1, "fetched_lex": 0, "cands": 1, "pubs_used": 1, "t_dense": 0, "t_lex": 0}))
+    monkeypatch.setattr(
+        re,
+        "hybrid_retrieve",
+        lambda e, q, pubs=None, qv=None, **kwargs: (
+            _mk_hits("dense"),
+            {
+                "dense_hits": 1,
+                "lex_hits": 0,
+                "fetched_dense": 1,
+                "fetched_lex": 0,
+                "cands": 1,
+                "pubs_used": 1,
+                "t_dense": 0,
+                "t_lex": 0,
+                "k_requested": kwargs.get("k", 10),
+                "k_applied": kwargs.get("k", 10),
+                "k_clamped": False,
+            },
+        ),
+    )
     out = re.run_query(eng, "easy question", use_jdg=False)
     assert out["ok"] is True
     assert out["hits"]
@@ -45,7 +64,26 @@ def test_dense_only(monkeypatch):
 
 def test_lex_only(monkeypatch):
     eng = FakeEng()
-    monkeypatch.setattr(re, "hybrid_retrieve", lambda e, q, pubs=None, qv=None: (_mk_hits("lex"), {"dense_hits": 0, "lex_hits": 1, "fetched_dense": 0, "fetched_lex": 1, "cands": 1, "pubs_used": 1, "t_dense": 0, "t_lex": 0}))
+    monkeypatch.setattr(
+        re,
+        "hybrid_retrieve",
+        lambda e, q, pubs=None, qv=None, **kwargs: (
+            _mk_hits("lex"),
+            {
+                "dense_hits": 0,
+                "lex_hits": 1,
+                "fetched_dense": 0,
+                "fetched_lex": 1,
+                "cands": 1,
+                "pubs_used": 1,
+                "t_dense": 0,
+                "t_lex": 0,
+                "k_requested": kwargs.get("k", 10),
+                "k_applied": kwargs.get("k", 10),
+                "k_clamped": False,
+            },
+        ),
+    )
     out = re.run_query(eng, "keyword", use_jdg=False)
     assert out["ok"]
     assert out["hits"]
@@ -54,7 +92,26 @@ def test_lex_only(monkeypatch):
 
 def test_hybrid_and_near_miss(monkeypatch):
     eng = FakeEng()
-    monkeypatch.setattr(re, "hybrid_retrieve", lambda e, q, pubs=None, qv=None: (_mk_hits("hybrid"), {"dense_hits": 1, "lex_hits": 1, "fetched_dense": 1, "fetched_lex": 1, "cands": 2, "pubs_used": 1, "t_dense": 0, "t_lex": 0}))
+    monkeypatch.setattr(
+        re,
+        "hybrid_retrieve",
+        lambda e, q, pubs=None, qv=None, **kwargs: (
+            _mk_hits("hybrid"),
+            {
+                "dense_hits": 1,
+                "lex_hits": 1,
+                "fetched_dense": 1,
+                "fetched_lex": 1,
+                "cands": 2,
+                "pubs_used": 1,
+                "t_dense": 0,
+                "t_lex": 0,
+                "k_requested": kwargs.get("k", 10),
+                "k_applied": kwargs.get("k", 10),
+                "k_clamped": False,
+            },
+        ),
+    )
     out = re.run_query(eng, "hard question", use_jdg=False, nm=True)
     assert out["ok"]
     assert out["hits"]

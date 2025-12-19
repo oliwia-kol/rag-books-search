@@ -74,7 +74,7 @@ def main():
     if rq["meta"]["t"]["total"] < 0:
         raise AssertionError("meta.t.total should be populated")
     # meta flags/caps should be present and stable
-    for flag in ["dense_used", "lex_used", "veto_applied", "llm_used"]:
+    for flag in ["dense_used", "lex_used", "veto_applied", "llm_used", "llm_bypassed", "dense_clamped", "lex_clamped"]:
         if flag not in rq["meta"]["flags"]:
             raise AssertionError(f"meta.flags missing: {flag}")
     for cap in ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind", "corp_available"]:

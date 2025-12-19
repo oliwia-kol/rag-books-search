@@ -1,5 +1,7 @@
 import streamlit as st
 
+import rag_engine as re
+
 
 def qp_get(k: str, d=None):
     try:
@@ -23,7 +25,9 @@ def init_state():
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
     ss.setdefault("srt", "Best evidence")
     ss.setdefault("nm", True)          # show near-miss when ok=True
+    ss.setdefault("nm_skip", False)    # skip near-miss computation to save cost
     ss.setdefault("jmin", 0.45)        # display min judge01
+    ss.setdefault("jdg_mode", "proxy") # judge mode: proxy / real / off
 
     # HARD REQUIREMENTS
     ss["use_jdg"] = True               # judge must be ON by default (and stay on)
@@ -60,6 +64,8 @@ def global_error_box():
             if st.button("Dismiss", key="err_dismiss"):
                 ss["_ui_err"] = None
                 st.rerun()
+        with c1:
+            st.caption("If this persists, reload the page and retry the query. Error IDs help with debugging.")
 
 
 def cb_clear():
@@ -96,6 +102,18 @@ def sidebar(eng=None, startup_report=None):
     with st.sidebar:
         st.toggle("Advanced", key="adv")
 
+        if eng is not None:
+            rep = re.get_startup_report(eng)
+            ok = rep.get("ok", [])
+            fail = rep.get("fail", [])
+            st.caption(f"Startup: loaded {len(ok)} / {len(ok)+len(fail)} corpora")
+            if fail:
+                with st.expander("Corpus status", expanded=False):
+                    for k, v in rep.get("by_corpus", {}).items():
+                        emoji = "✅" if v.get("ok") else "⚠️"
+                        reasons = ", ".join(v.get("reasons", []))
+                        st.write(f"{emoji} {k}: dense_loaded={v.get('dense_loaded')} db_loaded={v.get('db_loaded')} dim_ok={v.get('dim_ok')} {reasons}")
+
         st.caption("Publisher scope")
         # multi-select pills-ish
         ss["pubs"] = st.multiselect(
@@ -108,6 +126,13 @@ def sidebar(eng=None, startup_report=None):
         # judge is always ON. show status only.
         st.caption("Judge")
         st.checkbox("USE_JDG (rerank)", value=True, disabled=True, help="Forced ON", key="_use_jdg_view")
+        st.selectbox(
+            "Judge mode",
+            options=["proxy", "real", "off"],
+            index=["proxy", "real", "off"].index(ss.get("jdg_mode", "proxy")),
+            help="proxy = score-based, real = cross-encoder (CPU), off = bypass",
+            key="jdg_mode",
+        )
 
         if eng is not None:
             st.caption("Startup status")
@@ -129,6 +154,7 @@ def sidebar(eng=None, startup_report=None):
             ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", 0.35)), 0.05, label_visibility="collapsed")
 
             st.toggle("Show near-miss even when ok=True", key="nm")
+            st.toggle("Skip near-miss computation (faster)", key="nm_skip")
 
         st.divider()
 

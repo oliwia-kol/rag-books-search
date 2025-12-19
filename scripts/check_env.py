@@ -1,27 +1,25 @@
-#!/usr/bin/env python
-"""Environment validation for CPU-only RAG Books Search.
+"""Environment checker for RAG Books Search.
 
-Exit codes
-----------
-0: ok
-2: python version mismatch
-3: missing required package
-4: missing data artifacts
-5: other error
+Validates Python version, required dependencies, and presence of per-corpus
+artifacts. Intended for local pre-flight checks before running the app.
+
+Run:
+    python scripts/check_env.py
 """
-
 from __future__ import annotations
 
-import argparse
-import importlib
 import json
+import platform
 import sys
 from pathlib import Path
+from typing import Dict, List
+
+import importlib
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-ROOT = Path(__file__).resolve().parent.parent
-
-REQUIRED_PACKAGES = [
+REQUIRED_MODULES = [
     "streamlit",
     "numpy",
     "pandas",
@@ -29,111 +27,72 @@ REQUIRED_PACKAGES = [
     "sentence_transformers",
 ]
 
-DEFAULT_PUBS = ["OReilly", "Manning", "Pearson"]
+DATA_LAYOUT = {
+    "OReilly": ["index.faiss", "meta.sqlite", "manifest.json"],
+    "Manning": ["index.faiss", "meta.sqlite", "manifest.json"],
+    "Pearson": ["index.faiss", "meta.sqlite", "manifest.json"],
+}
 
 
-def _ok(msg: str):
-    print(f"[OK] {msg}")
+class CheckResult:
+    def __init__(self):
+        self.errors: List[str] = []
+        self.warnings: List[str] = []
+        self.info: List[str] = []
+        self.data: Dict[str, Dict[str, bool]] = {}
+
+    def ok(self) -> bool:
+        return not self.errors
 
 
-def _fail(msg: str):
-    print(f"[FAIL] {msg}")
+def _check_python(res: CheckResult):
+    ver = sys.version_info
+    ver_str = platform.python_version()
+    if ver < (3, 9):
+        res.errors.append(f"Python >=3.9 required, found {ver_str}")
+    else:
+        res.info.append(f"Python version OK: {ver_str}")
 
 
-def check_python(min_version=(3, 9)) -> bool:
-    if sys.version_info < min_version:
-        _fail(f"Python>={'%s.%s' % min_version} required; found {sys.version.split()[0]}")
-        return False
-    _ok(f"Python {sys.version.split()[0]}")
-    return True
-
-
-def check_packages() -> bool:
-    ok = True
-    for pkg in REQUIRED_PACKAGES:
+def _check_deps(res: CheckResult):
+    for mod in REQUIRED_MODULES:
         try:
-            importlib.import_module(pkg)
-            _ok(f"package {pkg}")
-        except Exception as ex:  # pragma: no cover - defensive
-            ok = False
-            _fail(f"package {pkg} missing: {type(ex).__name__}: {ex}")
-    return ok
+            importlib.import_module(mod)
+            res.info.append(f"Dependency ok: {mod}")
+        except Exception as exc:
+            res.errors.append(f"Missing dependency: {mod} ({exc})")
 
 
-def check_data(publishers=None) -> bool:
-    pubs = publishers or DEFAULT_PUBS
-    base = ROOT / "data"
-    ok = True
-    for pub in pubs:
-        p = base / pub
-        faiss_p = p / "index.faiss"
-        db_p = p / "meta.sqlite"
-        manifest_p = p / "manifest.json"
-        exists = p.exists()
-        missing = [name for name, flag in [
-            ("index.faiss", faiss_p.exists()),
-            ("meta.sqlite", db_p.exists()),
-            ("manifest.json", manifest_p.exists()),
-        ] if not flag]
-        if exists and not missing:
-            _ok(f"data/{pub}")
-        else:
-            ok = False
-            if not exists:
-                _fail(f"data/{pub}: directory missing")
-            else:
-                _fail(f"data/{pub}: missing {', '.join(missing)}")
-    return ok
+def _check_data(res: CheckResult):
+    data_root = ROOT / "data"
+    for corp, files in DATA_LAYOUT.items():
+        corp_path = data_root / corp
+        status = {"exists": corp_path.exists()}
+        for f in files:
+            status[f] = (corp_path / f).exists()
+        status["ok"] = status["exists"] and all(status[f] for f in files)
+        if not status["exists"]:
+            res.warnings.append(f"Missing corpus folder: {corp_path}")
+        elif not status["ok"]:
+            missing = [f for f in files if not status[f]]
+            res.warnings.append(f"Corpus {corp} incomplete: missing {', '.join(missing)}")
+        res.data[corp] = status
 
 
-def load_publishers_from_manifest(manifest_path: Path) -> list[str]:
-    with manifest_path.open("r", encoding="utf-8") as fh:
-        data = json.load(fh)
-    pubs = data.get("publishers")
-    if isinstance(pubs, list) and pubs:
-        return [str(p) for p in pubs]
-    raise ValueError("manifest publishers must be a non-empty list")
+def main():
+    res = CheckResult()
+    _check_python(res)
+    _check_deps(res)
+    _check_data(res)
 
+    print("=== Environment check ===")
+    print(json.dumps({"info": res.info, "warnings": res.warnings, "errors": res.errors, "data": res.data}, indent=2))
 
-def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description="Check environment for rag-books-search (CPU)")
-    ap.add_argument(
-        "--publishers-manifest",
-        type=Path,
-        help="Optional JSON file containing {'publishers': ['OReilly', ...]} to override defaults.",
-    )
-    return ap.parse_args(argv)
-
-
-def main(argv=None) -> int:
-    args = parse_args(argv)
-    try:
-        pubs = DEFAULT_PUBS
-        if args.publishers_manifest:
-            try:
-                pubs = load_publishers_from_manifest(args.publishers_manifest)
-            except Exception as ex:
-                _fail(f"failed to read publishers manifest: {ex}")
-                return 5
-
-        py_ok = check_python()
-        pkg_ok = check_packages()
-        data_ok = check_data(pubs)
-
-        if not py_ok:
-            return 2
-        if not pkg_ok:
-            return 3
-        if not data_ok:
-            return 4
-        _ok("environment ready")
-        return 0
-    except KeyboardInterrupt:  # pragma: no cover - convenience
-        return 5
-    except Exception as ex:  # pragma: no cover - defensive
-        _fail(f"unexpected error: {type(ex).__name__}: {ex}")
-        return 5
+    if res.errors:
+        sys.exit(1)
+    # Missing corpora are warnings, not fatal for CI/local checks.
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

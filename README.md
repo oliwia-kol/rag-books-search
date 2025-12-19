@@ -9,6 +9,11 @@ Aplikacja:
 - unika halucynacji poprzez twarde reguły evidence,
 - działa **wyłącznie na CPU** (bez GPU / CUDA).
 
+> CPU-only wymusza:
+> - instalację binariów Pytorch/FAISS z kanału CPU,
+> - brak zależności od GPU/CUDA w kodzie (w tym w CrossEncoder),
+> - budżety tokenowe/znakowe w LLM i kontekście, aby uniknąć przepełnień.
+
 UI: Streamlit  
 Logika: `rag_engine.py`
 
@@ -42,34 +47,11 @@ data/
 
 Repo **nie wymaga** plików EPUB/PDF – tylko artefaktów indeksów.
 
-## Build offline (Phase 1)
-
-1. Przygotuj `raw/<Publisher>/*.txt` (plain text).
-2. Uruchom budowę korpusów (deterministyczne chunkowanie + embedding + FAISS + SQLite + manifest):
-
-```bash
-python scripts/build_corpus.py --src raw --out data --report build_report.json
-```
-
-- flaga `--publisher` pozwala zbudować tylko wybranych,
-- `--validate-only` sprawdza spójność (wymiary, liczba chunków) bez ponownego embedowania.
-
-Raport (`build_report.json`) zwraca sukces/fail per korpus z powodem.
-
-## Walidacja środowiska
-
-Skrypt sprawdza wersję Pythona (>=3.9), paczki i komplet plików `data/<pub>/{index.faiss,meta.sqlite,manifest.json}`:
+Szybka weryfikacja środowiska (Python + zależności + artefakty danych):
 
 ```bash
 python scripts/check_env.py
 ```
-
-## Polityka logowania/błędy (runtime)
-
-- każde zapytanie zapisuje strukturalne metadane w `meta.log` (tryb, scope, liczniki, flagi, no_evidence),
-- guardraile: clamp kontekstu i promptu, wymuszony judge ON w UI, densy wyłączane przy mismatch wymiarów,
-- błędy runtime zwracane w polu `meta.err` + globalny box w UI; brak korpusów -> komunikat o dodaniu `data/`.
-- Luka vs DoD: brak trwałego audytu plikowego/log shipping, judge działa w trybie proxy (brak prawdziwego cross-encodera), brak polityki retencji.
 
 ---
 
@@ -92,16 +74,10 @@ streamlit run app.py
 Aplikacja będzie dostępna pod:
 http://localhost:8501
 
-## Walidacja retrieval (Phase 2)
+## Testy i walidacja
 
-Testy pokrywające dense-only, lex-only, hybrid oraz brak korpusu:
+- Szybki smoke: `python smoke_ui_contract.py`
+- Walidacja jakości retrieval: `pytest tests/validation/test_retrieval_quality.py`
+- Pakiet testów jednostkowych: `pytest tests`
 
-```bash
-pytest tests/validation/test_retrieval_quality.py
-```
-
-## Komendy CI / smoke
-
-- środowisko: `python scripts/check_env.py`
-- budowa korpusów offline: `python scripts/build_corpus.py --src raw --out data --report build_report.json`
-- testy walidacji retrieval: `pytest tests/validation/test_retrieval_quality.py`
+CI uruchamia smoke + walidację na gałęzi głównej.

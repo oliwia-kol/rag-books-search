@@ -13,6 +13,7 @@ import sqlite3
 import time
 import json
 from functools import lru_cache
+from logging.handlers import RotatingFileHandler
 from statistics import pstdev
 
 import faiss
@@ -20,15 +21,76 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sentence_transformers import CrossEncoder
 
-logger = logging.getLogger(__name__)
-
-
 # -----------------------------
 # -----------------------------
 # Paths (repo-local)
 # -----------------------------
 ROOT = Path(__file__).parent
 BASE_OUT = ROOT / "data"
+
+logger = logging.getLogger(__name__)
+_LOGGER_CONFIGURED = False
+LOG_PATH = Path(os.environ.get("RAG_LOG_PATH", ROOT / "logs" / "query.log"))
+LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 1_000_000))
+LOG_BACKUP_COUNT = int(os.environ.get("RAG_LOG_BACKUP_COUNT", 3))
+
+CTX_CLAMP_MARKER = "... [ctx-clamped]"
+LLM_CLAMP_MARKER = "... [llm-clamped]"
+
+
+def _config_logger():
+    global _LOGGER_CONFIGURED
+    if _LOGGER_CONFIGURED:
+        return
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    fmt = logging.Formatter("%(message)s")
+    logger.setLevel(logging.INFO)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(fmt)
+    logger.addHandler(stream_handler)
+    try:
+        file_handler = RotatingFileHandler(LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT)
+        file_handler.setFormatter(fmt)
+        logger.addHandler(file_handler)
+    except Exception:
+        # best-effort; stdout/stderr logging still works
+        pass
+    _LOGGER_CONFIGURED = True
+
+
+def _clamp_text(txt: str, char_budget: Optional[int], tok_budget: Optional[int], marker: Optional[str]) -> tuple[str, Dict[str, bool]]:
+    t = (txt or "").strip()
+    char_clamped = False
+    tok_clamped = False
+    if char_budget is not None and char_budget > 0 and len(t) > char_budget:
+        t = t[:char_budget]
+        char_clamped = True
+    toks = t.split()
+    if tok_budget is not None and tok_budget > 0 and len(toks) > tok_budget:
+        t = " ".join(toks[:tok_budget])
+        tok_clamped = True
+    if (char_clamped or tok_clamped) and marker:
+        marker_tokens = marker.strip().split()
+        marker_txt = " ".join(marker_tokens)
+        base_tokens = t.split()
+        if tok_budget is not None and tok_budget > 0:
+            keep = max(0, tok_budget - len(marker_tokens))
+            base_tokens = base_tokens[:keep]
+        combined_tokens = base_tokens + marker_tokens
+        combined = " ".join(combined_tokens).strip()
+        if char_budget is not None and char_budget > 0 and len(combined) > char_budget:
+            # trim base tokens until the marker fits
+            while len(combined) > char_budget and base_tokens:
+                base_tokens = base_tokens[:-1]
+                combined_tokens = base_tokens + marker_tokens
+                combined = " ".join(combined_tokens).strip()
+            if len(combined) > char_budget:
+                combined = marker_txt[:char_budget]
+        t = combined
+    return t, {"char_clamped": char_clamped, "token_clamped": tok_clamped}
 
 CORP = {
     "OReilly": BASE_OUT / "OReilly",
@@ -93,6 +155,22 @@ HCFG = {
     "max_snippet_chars": 850,
     "max_ctx_chars": 1400,
     "max_prompt_chars": 2000,
+    "budgets": {
+        "quick": {
+            "ctx_chars": 1400,
+            "ctx_tokens": 380,
+            "prompt_chars": 2000,
+            "prompt_tokens": 260,
+        },
+        "exact": {
+            "ctx_chars": 2000,
+            "ctx_tokens": 520,
+            "prompt_chars": 2800,
+            "prompt_tokens": 360,
+        },
+    },
+    "jdg_cache_ttl": 600,
+    "jdg_cache_size": 256,
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -133,8 +211,34 @@ META_N_KEYS = [
     "fallback_failed",
 ]
 META_CAP_KEYS = ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind"]
-META_FLAG_KEYS = ["dense_used", "lex_used", "veto_applied", "veto_disabled", "llm_used", "llm_bypassed", "dense_clamped", "lex_clamped"]
+META_FLAG_KEYS = [
+    "dense_used",
+    "lex_used",
+    "veto_applied",
+    "veto_disabled",
+    "veto_disabled_when_proxy",
+    "judge_proxy",
+    "llm_used",
+    "llm_bypassed",
+    "dense_clamped",
+    "lex_clamped",
+    "ctx_clamped",
+    "prompt_clamped",
+]
 STAGES = META_T_KEYS
+
+
+def _budget_for_mode(mode: str, overrides: Optional[Dict[str, int]] = None) -> Dict[str, int]:
+    budgets = HCFG.get("budgets") or {}
+    default = budgets.get("quick", {})
+    b = budgets.get((mode or "quick").lower(), {}) or {}
+    overrides = overrides or {}
+    return {
+        "ctx_chars": overrides.get("ctx_chars", b.get("ctx_chars", default.get("ctx_chars", HCFG["max_ctx_chars"]))),
+        "ctx_tokens": overrides.get("ctx_tokens", b.get("ctx_tokens", default.get("ctx_tokens", HCFG["max_ctx_chars"]))),
+        "prompt_chars": overrides.get("prompt_chars", b.get("prompt_chars", default.get("prompt_chars", HCFG["max_prompt_chars"]))),
+        "prompt_tokens": overrides.get("prompt_tokens", b.get("prompt_tokens", default.get("prompt_tokens", HCFG["max_prompt_chars"]))),
+    }
 
 # -----------------------------
 # FTS helpers
@@ -294,24 +398,6 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
         reports[k] = rep
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
-
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        if not dim_ok:
-            rep.setdefault("reasons", []).append("embed_dim_mismatch")
-        reports[k] = rep
-
-def get_startup_report(e: Eng) -> Dict[str, Any]:
-    return {
-        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
-        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
-        "corp": getattr(e, "corp_status", {}),
-    }
 
 
 def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
@@ -686,8 +772,13 @@ def _safe_msg(ex, max_len: int = 200) -> str:
     return msg
 
 
-def _err_id() -> str:
-    return f"err-{int(time.time() * 1000)}"
+def _err_id(seed: Optional[str] = None) -> str:
+    basis = seed if seed is not None else f"{time.time()}"
+    try:
+        h = hashlib.sha1(str(basis).encode("utf-8", "ignore")).hexdigest()[:10]
+    except Exception:
+        h = f"{int(time.time() * 1000)}"
+    return f"err-{h}"
 
 
 def _blank_meta():
@@ -699,14 +790,44 @@ def _blank_meta():
     cap["k_applied"] = None
     cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
-    return {"t": {k: 0.0 for k in META_T_KEYS}, "n": {k: 0 for k in META_N_KEYS}, "cap": cap, "flags": flags, "err": None, "log": {}}
+    return {
+        "t": {k: 0.0 for k in META_T_KEYS},
+        "n": {k: 0 for k in META_N_KEYS},
+        "cap": cap,
+        "flags": flags,
+        "err": None,
+        "err_llm": None,
+        "clamp": {},
+        "log": {},
+    }
 
 
-def get_startup_report(eng: Eng) -> Dict[str, Any]:
+def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
+    rows = []
     rep = getattr(eng, "corp_report", {}) or {}
-    ok = [k for k, v in rep.items() if v.get("ok")]
-    fail = [k for k in rep.keys() if k not in ok]
-    return {"ok": ok, "fail": fail, "by_corpus": rep}
+    for pub in CORP.keys():
+        r = rep.get(pub, {})
+        ready = all(
+            [
+                r.get("exists"),
+                r.get("faiss"),
+                r.get("db"),
+                r.get("manifest"),
+                r.get("dense_loaded"),
+                r.get("db_loaded"),
+                r.get("dim_ok"),
+            ]
+        )
+        rows.append(
+            {
+                "publisher": pub,
+                "loaded_dense": bool(r.get("dense_loaded")),
+                "loaded_db": bool(r.get("db_loaded")),
+                "ready": bool(ready),
+                "reason": "" if ready else (r.get("failure_reason") or "unavailable"),
+            }
+        )
+    return rows
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):
@@ -749,8 +870,9 @@ def _get_jdg():
         return None
 
 
-_JDG_CACHE: Dict[Tuple[str, str], float] = {}
-_JDG_CACHE_MAX = 128
+_JDG_CACHE: Dict[Tuple[str, str], Tuple[float, float]] = {}
+_JDG_CACHE_MAX = HCFG.get("jdg_cache_size", 256)
+_JDG_CACHE_TTL = HCFG.get("jdg_cache_ttl", 600)
 
 
 def _jdg_rerank(q, hs, mode: str = "proxy"):
@@ -773,24 +895,35 @@ def _jdg_rerank(q, hs, mode: str = "proxy"):
             h["judge01"] = js
         hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
         kind = "proxy_score" if mode != "off" else "off"
-        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": kind}
+        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": kind, "cache_hits": 0}
 
     tp = hs[: min(K_JDG, len(hs))]
     pairs = [(q, (h.get("text") or "")[:1200]) for h in tp]
     t0 = time.time()
     sc = []
+    cache_hits = 0
     try:
+        now = time.time()
         for pr in pairs:
-            key = (pr[0], pr[1])
-            if key in _JDG_CACHE:
-                sc.append(_JDG_CACHE[key])
+            q_sig = hashlib.sha1(pr[0].encode("utf-8", "ignore")).hexdigest()
+            c_sig = hashlib.sha1(pr[1].encode("utf-8", "ignore")).hexdigest()
+            key = (q_sig, c_sig)
+            cached = _JDG_CACHE.get(key)
+            if cached and now - cached[1] <= _JDG_CACHE_TTL:
+                sc.append(cached[0])
+                cache_hits += 1
                 continue
             scr = float(j.predict([pr])[0])
             sc.append(scr)
-            _JDG_CACHE[key] = scr
+            _JDG_CACHE[key] = (scr, time.time())
             if len(_JDG_CACHE) > _JDG_CACHE_MAX:
                 # drop arbitrary oldest key
                 _JDG_CACHE.pop(next(iter(_JDG_CACHE)))
+        # prune expired
+        if _JDG_CACHE:
+            expire_keys = [k for k, v in _JDG_CACHE.items() if now - v[1] > _JDG_CACHE_TTL]
+            for k in expire_keys:
+                _JDG_CACHE.pop(k, None)
     except Exception:
         return hs, {"ok": False, "t": time.time() - t0, "n": len(tp), "kind": "error"}
     t1 = time.time()
@@ -798,7 +931,7 @@ def _jdg_rerank(q, hs, mode: str = "proxy"):
         h["_jdg"] = float(s)
         h["judge01"] = _sig(h["_jdg"])
     tp.sort(key=lambda x: float(x.get("_jdg", -1e9)), reverse=True)
-    return tp + hs[len(tp) :], {"ok": True, "t": t1 - t0, "n": len(tp), "kind": "cross_encoder"}
+    return tp + hs[len(tp) :], {"ok": True, "t": t1 - t0, "n": len(tp), "kind": "cross_encoder", "cache_hits": cache_hits}
 
 
 def _disp_flt(hs, min_keep=MNK, jmin=J_DISP_MIN, use_jdg=USE_JDG_DEFAULT):
@@ -957,27 +1090,36 @@ def _calc_confidence(dr):
     return max(0.0, min(1.0, base))
 
 
-def _assemble_context(dr, budget_chars: int = 1400, budget_tokens: int = 380):
+def _assemble_context(dr, budget_chars: int = 1400, budget_tokens: int = 380) -> tuple[str, Dict[str, bool]]:
     if not dr:
-        return ""
+        return "", {"char_clamped": False, "token_clamped": False}
     # deterministic by judge01/score
     dr_sorted = sorted(dr, key=lambda h: (-float(h.get("judge01", 0.0)), -float(h.get("score", 0.0)), str(h.get("cid", ""))))
     out = []
     used = 0
+    char_clamped = False
     for h in dr_sorted:
         tx = (h.get("tx") or h.get("text") or "")[:800]
         if not tx:
             continue
-        if used + len(tx) > budget_chars and used > 0:
-            break
+        next_len = used + len(tx) + (2 if out else 0)
+        if next_len > budget_chars:
+            # clamp final piece to remaining budget
+            remaining = max(0, budget_chars - used)
+            if remaining <= 0:
+                char_clamped = True
+                break
+            tx = tx[:remaining]
+            char_clamped = True
         out.append(tx)
-        used += len(tx) + 1
-    ctx = "\n\n".join(out)[:budget_chars]
+        used = min(budget_chars, next_len)
+        if used >= budget_chars:
+            char_clamped = True
+            break
+    ctx = "\n\n".join(out)
     # soft token budget (approx by whitespace tokens)
-    toks = ctx.split()
-    if len(toks) > budget_tokens:
-        ctx = " ".join(toks[:budget_tokens])
-    return ctx
+    ctx, tok_meta = _clamp_text(ctx, budget_chars, budget_tokens, CTX_CLAMP_MARKER)
+    return ctx, {"char_clamped": char_clamped or tok_meta.get("char_clamped"), "token_clamped": tok_meta.get("token_clamped")}
 
 
 def llm_call(prompt: str, cfg: Optional[dict] = None) -> str:
@@ -985,12 +1127,11 @@ def llm_call(prompt: str, cfg: Optional[dict] = None) -> str:
     if not prompt:
         return ""
     cfg = cfg or {}
-    char_budget = int(cfg.get("char_budget", 900))
-    tok_budget = int(cfg.get("tok_budget", 220))
-    p = prompt.strip()[:char_budget]
-    toks = p.split()
-    if len(toks) > tok_budget:
-        p = " ".join(toks[:tok_budget])
+    mode = (cfg.get("mode") or "quick") if isinstance(cfg, dict) else "quick"
+    b = _budget_for_mode(mode, {})
+    char_budget = int(cfg.get("char_budget", b.get("prompt_chars", 900)))
+    tok_budget = int(cfg.get("tok_budget", b.get("prompt_tokens", 220)))
+    p, _ = _clamp_text(prompt, char_budget, tok_budget, LLM_CLAMP_MARKER)
     return p
 
 
@@ -1033,6 +1174,7 @@ def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
 
 def _log_event(meta, mode, pubs, qlen):
     try:
+        _config_logger()
         payload = {
             "ts": time.time(),
             "mode": mode,
@@ -1041,10 +1183,13 @@ def _log_event(meta, mode, pubs, qlen):
             "counts": dict(meta.get("n", {})),
             "flags": dict(meta.get("flags", {})),
             "judge_ok": meta.get("cap", {}).get("judge_ok", False),
+            "judge_kind": meta.get("cap", {}).get("judge_kind", "none"),
             "no_evidence": meta.get("err") is None and meta.get("n", {}).get("direct_hits", 0) == 0,
             "durations": dict(meta.get("t", {})),
             "error_id": (meta.get("err") or {}).get("id"),
             "llm_err": meta.get("err")["msg"] if meta.get("err") and meta.get("err", {}).get("where") == "llm_call" else None,
+            "llm_dur": meta.get("t", {}).get("llm"),
+            "clamp": dict(meta.get("clamp", {})),
         }
         meta["log"] = payload
         try:
@@ -1069,6 +1214,10 @@ def run_query(
     use_llm: bool | None = None,
     use_vector_mmr: bool | None = None,
     mode: str | None = None,
+    ctx_char_budget: Optional[int] = None,
+    ctx_tok_budget: Optional[int] = None,
+    prompt_char_budget: Optional[int] = None,
+    prompt_tok_budget: Optional[int] = None,
 ):
     t_total = _t0()
     meta = _blank_meta()
@@ -1078,6 +1227,13 @@ def run_query(
         jdg_mode = "off"
     nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
     mode = (mode or "quick").lower()
+    budget_overrides = {
+        "ctx_chars": ctx_char_budget,
+        "ctx_tokens": ctx_tok_budget,
+        "prompt_chars": prompt_char_budget,
+        "prompt_tokens": prompt_tok_budget,
+    }
+    budget = _budget_for_mode(mode, {k: v for k, v in budget_overrides.items() if v is not None})
     meta["cap"]["has_emb"] = e.emb is not None
     meta["cap"]["dense_ok"] = bool(getattr(e, "ix", {}))
     if not meta["cap"]["has_emb"]:
@@ -1097,6 +1253,8 @@ def run_query(
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
             meta["t"]["total"] = _dt(t_total)
             meta["flags"]["llm_bypassed"] = True
+            meta["flags"]["llm_used"] = False
+            meta["err_llm"] = None
             return _mk_ret(
                 ok=False,
                 no_ev=True,
@@ -1187,8 +1345,9 @@ def run_query(
             disp_use_jdg = bool(meta_jdg.get("ok"))
             meta["cap"]["judge_ok"] = disp_use_jdg
             meta["cap"]["judge_kind"] = meta_jdg.get("kind", "none")
-            if meta_jdg.get("kind") != "cross_encoder":
-                meta["flags"]["veto_disabled"] = True
+            meta["flags"]["judge_proxy"] = meta_jdg.get("kind") != "cross_encoder"
+            meta["flags"]["veto_disabled_when_proxy"] = meta["flags"]["judge_proxy"]
+            meta["flags"]["veto_disabled"] = meta["flags"]["veto_disabled_when_proxy"]
             veto = False
             if disp_use_jdg:
                 veto, _ = _noev_jdg(hs2)
@@ -1210,6 +1369,9 @@ def run_query(
 
         if not use_jdg_flag:
             meta["cap"]["judge_kind"] = "none"
+            meta["flags"]["judge_proxy"] = False
+            meta["flags"]["veto_disabled_when_proxy"] = False
+            meta["flags"]["veto_disabled"] = False
 
         # direct evidence
         t_direct = _t0()
@@ -1227,18 +1389,46 @@ def run_query(
             t_llm = _t0()
             ans_txt = ""
             if use_llm:
-                ctx = _assemble_context(dr)
+                ctx, ctx_meta = _assemble_context(dr, budget_chars=budget["ctx_chars"], budget_tokens=budget["ctx_tokens"])
+                meta["clamp"]["context"] = {
+                    "char_clamped": bool(ctx_meta.get("char_clamped")),
+                    "token_clamped": bool(ctx_meta.get("token_clamped")),
+                    "budget_chars": budget["ctx_chars"],
+                    "budget_tokens": budget["ctx_tokens"],
+                }
+                meta["flags"]["ctx_clamped"] = bool(ctx_meta.get("char_clamped") or ctx_meta.get("token_clamped"))
                 prompt = f"Context:\n{ctx}\n\nQuestion: {q}\nAnswer concisely without quotes."
+                prompt_clamped, prompt_meta = _clamp_text(
+                    prompt, budget["prompt_chars"], budget["prompt_tokens"], LLM_CLAMP_MARKER
+                )
+                meta["clamp"]["prompt"] = {
+                    "char_clamped": bool(prompt_meta.get("char_clamped")),
+                    "token_clamped": bool(prompt_meta.get("token_clamped")),
+                    "budget_chars": budget["prompt_chars"],
+                    "budget_tokens": budget["prompt_tokens"],
+                }
+                meta["flags"]["prompt_clamped"] = bool(prompt_meta.get("char_clamped") or prompt_meta.get("token_clamped"))
                 try:
-                    ans_txt = llm_call(prompt, cfg={"mode": "quick", "char_budget": 900, "tok_budget": 200})
+                    ans_txt = llm_call(
+                        prompt_clamped,
+                        cfg={
+                            "mode": mode,
+                            "char_budget": budget["prompt_chars"],
+                            "tok_budget": budget["prompt_tokens"],
+                        },
+                    )
                     meta["flags"]["llm_used"] = True
+                    meta["err_llm"] = None
                 except Exception as ex:
                     ans_txt = ""
                     meta["flags"]["llm_used"] = False
                     meta["flags"]["llm_bypassed"] = True
-                    meta["err"] = {"where": "llm_call", "msg": _safe_msg(ex), "id": _err_id()}
+                    msg = _safe_msg(ex)
+                    meta["err_llm"] = msg
+                    meta["err"] = {"where": "llm_call", "msg": msg, "id": _err_id(msg)}
             else:
                 meta["flags"]["llm_bypassed"] = True
+                meta["err_llm"] = None
             meta["t"]["llm"] = _dt(t_llm)
             meta["t"]["total"] = _dt(t_total)
             _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
@@ -1252,11 +1442,14 @@ def run_query(
         meta["t"]["total"] = _dt(t_total)
         meta["conf"] = _calc_confidence(dr if dr else hs3)
         meta["flags"]["llm_bypassed"] = True
+        meta["flags"]["llm_used"] = False
+        meta["err_llm"] = None
         _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:
-        meta["err"] = {"where": "run_query", "msg": _safe_msg(ex), "id": _err_id()}
+        msg = _safe_msg(ex)
+        meta["err"] = {"where": "run_query", "msg": msg, "id": _err_id(msg)}
         meta["t"]["total"] = _dt(t_total)
         _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)

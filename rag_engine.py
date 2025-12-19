@@ -54,6 +54,11 @@ def chk(p: Path) -> Dict[str, Any]:
 # -----------------------------
 # Retrieval + judge config
 # -----------------------------
+NM_MIN = 0.28
+NM_MAX = 6
+SQLITE_TEXT_MAX = 4000
+FAISS_FALLBACK_RETRY_MAX = 8
+
 HCFG = {
     "faiss_fetch_k": 60,
     "fts_fetch_k": 60,
@@ -63,6 +68,7 @@ HCFG = {
     "min_faiss_score": 0.18,
     "dense_k": 30,
     "lex_k": 30,
+    "fallback_retry_max": FAISS_FALLBACK_RETRY_MAX,
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -79,9 +85,6 @@ J_MIN_KEEP = 0.35
 J_WEAK_MIN = 0.45
 J_MIN_CNT = 1
 DIRECT_MIN = 1
-
-NM_MIN = 0.28
-NM_MAX = 6
 
 # contract constants
 RET_KEYS = ["ok", "no_evidence", "answer", "hits", "near_miss", "coverage", "meta"]
@@ -100,8 +103,10 @@ META_N_KEYS = [
     "near_miss",
     "uniq_books",
     "uniq_sections",
+    "fallback_retries",
+    "fallback_failed",
 ]
-META_CAP_KEYS = ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind"]
+META_CAP_KEYS = ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind", "k_clamped"]
 META_FLAG_KEYS = ["dense_used", "lex_used", "veto_applied", "llm_used"]
 STAGES = META_T_KEYS
 
@@ -144,6 +149,16 @@ def norm_scores(xs, key):
     for x in xs:
         x[key + "_n"] = (x.get(key, 0.0) - mn) / (mx - mn)
     return xs
+
+
+def _cap_tx(tx: Any, max_len: int = SQLITE_TEXT_MAX) -> str:
+    try:
+        s = str(tx or "")
+    except Exception:
+        s = ""
+    if max_len is None or max_len <= 0:
+        return s
+    return s[: max_len + 1][:max_len]
 
 
 # -----------------------------
@@ -230,26 +245,53 @@ def embed_query(e: Eng, q: str) -> np.ndarray:
 
 
 def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
+    meta = {
+        "k_requested": int(k) if k is not None else HCFG["faiss_fetch_k"],
+        "k_applied": None,
+        "k_clamped": False,
+        "fallback_retries": 0,
+        "fallback_failed": 0,
+    }
     if qv.size == 0:
-        return []
+        return [], meta
     if corp not in e.ix or corp not in e.dbp:
-        return []
+        return [], meta
     ix = e.ix[corp]
-    k = max(1, min(int(k), HCFG["faiss_fetch_k"]))
+    try:
+        k_applied = max(1, min(int(k), HCFG["faiss_fetch_k"]))
+    except Exception:
+        k_applied = max(1, HCFG["faiss_fetch_k"])
+    meta["k_applied"] = k_applied
+    meta["k_clamped"] = meta["k_applied"] != meta["k_requested"]
     try:
         if qv.dtype != np.float32:
             qv = np.asarray(qv, dtype="float32")
+        else:
+            qv = np.asarray(qv)
     except Exception:
-        return []
+        return [], meta
     try:
         if qv.shape[0] != ix.d:
-            return []
+            return [], meta
     except Exception:
-        return []
+        return [], meta
+    metric_type = None
     try:
-        D, I = ix.search(qv.reshape(1, -1), k)
+        metric_type = getattr(ix, "metric_type", None)
+        meta["metric_type"] = metric_type
     except Exception:
-        return []
+        metric_type = None
+    try:
+        if metric_type == getattr(faiss, "METRIC_INNER_PRODUCT", None):
+            qv = qv.reshape(1, -1).copy()
+            faiss.normalize_L2(qv)
+        qv_search = qv.reshape(1, -1)
+    except Exception:
+        return [], meta
+    try:
+        D, I = ix.search(qv_search, k_applied)
+    except Exception:
+        return [], meta
     ids = I[0].tolist()
     scs = D[0].tolist()
 
@@ -266,20 +308,30 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             seen_ids.add(int(i64))
             pairs.append((float(s), int(i64)))
         if not pairs:
-            return []
+            return [], meta
         wanted_ids = [i for _, i in pairs]
         ph = ",".join(["?"] * len(wanted_ids))
         cur = con.cursor()
+        missing_ids = []
         try:
             rows = cur.execute(f"SELECT cid, fp, sec, cidx, tx, i64 FROM chunks WHERE i64 IN ({ph})", wanted_ids).fetchall()
             i64_to_row = {int(r[5]): r for r in rows}
+            missing_ids = [i for i in wanted_ids if int(i) not in i64_to_row]
         except Exception:
             i64_to_row = {}
-            for _, i64 in pairs:
-                row = get_by_i64(con, int(i64))
-                if row:
-                    cid, fp, sec, cidx, tx = row
-                    i64_to_row[int(i64)] = (cid, fp, sec, cidx, tx, i64)
+            missing_ids = wanted_ids
+
+        fallback_budget = max(0, int(HCFG.get("fallback_retry_max", FAISS_FALLBACK_RETRY_MAX)))
+        for i64 in missing_ids[:fallback_budget]:
+            meta["fallback_retries"] += 1
+            row = get_by_i64(con, int(i64))
+            if row:
+                cid, fp, sec, cidx, tx = row
+                i64_to_row[int(i64)] = (cid, fp, sec, cidx, tx, i64)
+            else:
+                meta["fallback_failed"] += 1
+        if len(missing_ids) > fallback_budget:
+            meta["fallback_failed"] += len(missing_ids) - fallback_budget
         for s, i64 in pairs:
             row = i64_to_row.get(int(i64))
             if not row:
@@ -292,18 +344,18 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
                     "fp": fp,
                     "sec": sec,
                     "cidx": int(cidx),
-                    "tx": tx,
+                    "tx": _cap_tx(tx),
                     # aliases
                     "section": sec,
                     "book": Path(fp).stem if fp else None,
                     "publisher": corp,
-                    "text": tx,
+                    "text": _cap_tx(tx),
                     "sem_score": float(s),
                 }
             )
     finally:
         con.close()
-    return out
+    return out, meta
 
 
 def fts_search(e: Eng, corp: str, q: str, k: int):
@@ -339,12 +391,12 @@ def fts_search(e: Eng, corp: str, q: str, k: int):
                     "fp": fp,
                     "sec": sec,
                     "cidx": -1,
-                    "tx": tx,
+                    "tx": _cap_tx(tx),
                     # aliases
                     "section": sec,
                     "book": Path(fp).stem if fp else None,
                     "publisher": corp,
-                    "text": tx,
+                    "text": _cap_tx(tx),
                     "lex_score": float(-b),
                 }
             )
@@ -354,15 +406,16 @@ def fts_search(e: Eng, corp: str, q: str, k: int):
 
 
 def dense_retrieve(e: Eng, corp: str, qv: np.ndarray, k: int | None = None):
+    k_req = k or HCFG["faiss_fetch_k"]
     if corp not in e.ix:
-        return []
+        return [], {"fallback_retries": 0, "fallback_failed": 0, "k_requested": k_req, "k_applied": k_req, "k_clamped": False}
     if qv.size == 0:
-        return []
-    rows = faiss_search(e, corp, qv, k or HCFG["faiss_fetch_k"])
+        return [], {"fallback_retries": 0, "fallback_failed": 0, "k_requested": k_req, "k_applied": k_req, "k_clamped": False}
+    rows, meta = faiss_search(e, corp, qv, k_req)
     norm_scores(rows, "sem_score")
     for r in rows:
         r.setdefault("score", r.get("sem_score_n", 0.0))
-    return rows
+    return rows, meta
 
 
 def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
@@ -380,17 +433,41 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
     if qv is None:
         qv = embed_query(e, q)
     use_dense = qv.size > 0
+    try:
+        k_requested = int(k)
+    except Exception:
+        k_requested = HCFG["final_k"]
+    k_applied = max(1, min(k_requested, HCFG["mmr_k"]))
 
     pubs = pubs or list(e.corp.keys())
     cands = []
-    meta = {"dense_hits": 0, "lex_hits": 0, "pubs_used": 0, "t_dense": 0.0, "t_lex": 0.0, "fetched_dense": 0, "fetched_lex": 0}
+    meta = {
+        "dense_hits": 0,
+        "lex_hits": 0,
+        "pubs_used": 0,
+        "t_dense": 0.0,
+        "t_lex": 0.0,
+        "fetched_dense": 0,
+        "fetched_lex": 0,
+        "k_requested": k_requested,
+        "k_applied": k_applied,
+        "k_clamped": k_applied != k_requested,
+        "fallback_retries": 0,
+        "fallback_failed": 0,
+    }
 
     for corp in pubs:
         if corp not in e.corp:
             continue
 
         t_d0 = _t0()
-        d = dense_retrieve(e, corp, qv, k=HCFG["dense_k"]) if use_dense else []
+        if use_dense:
+            d, d_meta = dense_retrieve(e, corp, qv, k=HCFG["dense_k"])
+            meta["fallback_retries"] += d_meta.get("fallback_retries", 0)
+            meta["fallback_failed"] += d_meta.get("fallback_failed", 0)
+            meta["k_clamped"] = meta["k_clamped"] or bool(d_meta.get("k_clamped"))
+        else:
+            d, d_meta = [], {"k_clamped": False}
         meta["t_dense"] += _dt(t_d0)
         t_l0 = _t0()
         l = lex_retrieve(e, corp, q, k=HCFG["lex_k"])
@@ -436,7 +513,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
     seen = set()
     out = []
     per_pub = {}
-    div_cap = max(2, int(k))
+    div_cap = max(2, int(k_applied))
     for h in cands:
         key = (h.get("book"), h.get("sec"))
         key_fb = (h.get("fp"), h.get("sec"))
@@ -456,7 +533,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             break
 
     meta["cands"] = len(cands)
-    return out[:k], meta
+    return out[:k_applied], meta
 
 
 def _sig(x: float) -> float:
@@ -488,6 +565,9 @@ def _blank_meta():
     cap["judge_kind"] = "none"
     cap["corp_available"] = []
     cap["dense_reason"] = None
+    cap["k_requested"] = None
+    cap["k_applied"] = None
+    cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
     return {"t": {k: 0.0 for k in META_T_KEYS}, "n": {k: 0 for k in META_N_KEYS}, "cap": cap, "flags": flags, "err": None, "log": {}}
 
@@ -750,7 +830,7 @@ def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
             con.close()
             if rows:
                 return [
-                    {"cid": r[0], "fp": r[1], "sec": r[2], "cidx": int(r[3]), "tx": r[4], "corp": corp}
+                    {"cid": r[0], "fp": r[1], "sec": r[2], "cidx": int(r[3]), "tx": _cap_tx(r[4]), "corp": corp}
                     for r in rows
                 ]
         except Exception:
@@ -855,7 +935,12 @@ def run_query(
         meta["n"]["cands"] = rmeta.get("cands", 0)
         meta["n"]["pubs_used"] = rmeta.get("pubs_used", 0)
         meta["n"]["pubs_req"] = len(pubs or list(e.corp.keys()))
+        meta["n"]["fallback_retries"] = rmeta.get("fallback_retries", 0)
+        meta["n"]["fallback_failed"] = rmeta.get("fallback_failed", 0)
         meta["flags"]["lex_used"] = meta["n"]["lex_hits"] > 0 or bool(getattr(e, "dbp", {}))
+        meta["cap"]["k_requested"] = rmeta.get("k_requested")
+        meta["cap"]["k_applied"] = rmeta.get("k_applied")
+        meta["cap"]["k_clamped"] = bool(rmeta.get("k_clamped"))
         # mode-aware clamp for quick vs deep
         if mode.startswith("deep"):
             pass

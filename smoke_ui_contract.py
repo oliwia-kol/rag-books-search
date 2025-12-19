@@ -80,7 +80,7 @@ def main():
     for cap in ["has_emb", "dense_ok", "lex_ok", "judge_requested", "judge_ok", "judge_kind", "corp_available"]:
         if cap not in rq["meta"]["cap"]:
             raise AssertionError(f"meta.cap missing: {cap}")
-    for n_key in ["fetched_dense", "fetched_lex", "uniq_books", "uniq_sections"]:
+    for n_key in ["fetched_dense", "fetched_lex", "uniq_books", "uniq_sections", "fallback_retries", "fallback_failed"]:
         if n_key not in rq["meta"]["n"]:
             raise AssertionError(f"meta.n missing: {n_key}")
 

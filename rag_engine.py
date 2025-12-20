@@ -61,6 +61,17 @@ def _config_logger():
     _LOGGER_CONFIGURED = True
 
 
+def _scope_from_hits(hits) -> List[str]:
+    pubs = []
+    for h in hits or []:
+        for k in ("corp", "publisher", "pub"):
+            v = (h or {}).get(k)
+            if v:
+                pubs.append(str(v))
+                break
+    return sorted(set(pubs))
+
+
 def _clamp_text(txt: str, char_budget: Optional[int], tok_budget: Optional[int], marker: Optional[str]) -> tuple[str, Dict[str, bool]]:
     t = (txt or "").strip()
     char_clamped = False
@@ -771,7 +782,7 @@ def _safe_msg(ex, max_len: int = 200) -> str:
 
 
 def _err_id(seed: Optional[str] = None) -> str:
-    basis = seed if seed is not None else f"{time.time()}"
+    basis = seed if seed is not None else "err-seed"
     try:
         h = hashlib.sha1(str(basis).encode("utf-8", "ignore")).hexdigest()[:10]
     except Exception:
@@ -1236,32 +1247,47 @@ def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
         return {"ok": False, "chunks": [], "err": _safe_msg(ex)}
 
 
-def _log_event(meta, mode, pubs, qlen):
+def _log_event(meta, mode, pubs_requested, qlen, hits=None):
+    _config_logger()
     try:
-        existing = dict(meta.get("log", {}) or {})
+        base = dict(meta.get("log", {}) or {})
+        scope_used = _scope_from_hits(hits)
         payload = {
             "ts": time.time(),
             "mode": mode,
-            "judge_mode": existing.get("judge_mode"),
-            "scope": pubs,
+            "scope": {"requested": list(pubs_requested or []), "used": scope_used},
             "qlen": int(qlen or 0),
             "counts": dict(meta.get("n", {})),
             "flags": dict(meta.get("flags", {})),
             "judge_ok": meta.get("cap", {}).get("judge_ok", False),
             "judge_kind": meta.get("cap", {}).get("judge_kind", "none"),
+            "judge_mode": base.get("judge_mode"),
             "no_evidence": meta.get("err") is None and meta.get("n", {}).get("direct_hits", 0) == 0,
             "durations": dict(meta.get("t", {})),
             "error_id": (meta.get("err") or {}).get("id"),
-            "llm_err": meta.get("err")["msg"] if meta.get("err") and meta.get("err", {}).get("where") == "llm_call" else None,
+            "llm_err": meta.get("err_llm"),
             "llm_dur": meta.get("t", {}).get("llm"),
             "clamp": dict(meta.get("clamp", {})),
+            "judge_cache_hits": base.get("judge_cache_hits", 0),
+            "judge_cache_misses": base.get("judge_cache_misses", 0),
+            "judge": {
+                "ok": meta.get("cap", {}).get("judge_ok", False),
+                "kind": meta.get("cap", {}).get("judge_kind", "none"),
+                "mode": base.get("judge_mode", "none"),
+                "cache": {
+                    "hits": int(base.get("judge_cache_hits", 0)),
+                    "misses": int(base.get("judge_cache_misses", 0)),
+                },
+                "flags": {
+                    "veto_applied": meta.get("flags", {}).get("veto_applied", False),
+                    "veto_disabled": meta.get("flags", {}).get("veto_disabled", False),
+                    "veto_disabled_when_proxy": meta.get("flags", {}).get("veto_disabled_when_proxy", False),
+                },
+            },
         }
-        payload["judge_cache_hits"] = existing.get("judge_cache_hits", 0)
-        payload["judge_cache_misses"] = existing.get("judge_cache_misses", 0)
-        existing.update(payload)
-        meta["log"] = existing
+        meta["log"] = payload
         try:
-            logger.info(json.dumps(existing))
+            logger.info(json.dumps(payload))
         except Exception:
             pass
     except Exception:
@@ -1523,7 +1549,7 @@ def run_query(
                 meta["err_llm"] = None
             meta["t"]["llm"] = _dt(t_llm)
             meta["t"]["total"] = _dt(t_total)
-            _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+            _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=dr)
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
@@ -1536,7 +1562,7 @@ def run_query(
         meta["flags"]["llm_bypassed"] = True
         meta["flags"]["llm_used"] = False
         meta["err_llm"] = None
-        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=(hs3 or []) + (nm_hits or []))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:

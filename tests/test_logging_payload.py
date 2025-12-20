@@ -1,7 +1,7 @@
 import rag_engine as re
 
 
-sample_hit = {"cid": "c1", "fp": "f", "sec": "s", "tx": "query context with evidence", "cidx": 0, "score": 0.6}
+sample_hit = {"cid": "c1", "fp": "f", "sec": "s", "tx": "query context with evidence", "cidx": 0, "score": 0.6, "corp": "c"}
 
 
 def _fake_retrieve(*args, **kwargs):
@@ -20,10 +20,12 @@ def _fake_retrieve(*args, **kwargs):
 def test_log_payload_has_required_keys(monkeypatch):
     monkeypatch.setattr(re, "hybrid_retrieve", _fake_retrieve)
     eng = re.Eng(emb=None, ix={}, dbp={"c": None}, corp={"c": None}, ix_dim={}, corp_report={})
-    res = re.run_query(eng, "q", pubs=["c"], use_llm=False)
+    res = re.run_query(eng, "query context", pubs=["c"], use_llm=False)
     log = res["meta"].get("log") or {}
     for k in ["ts", "mode", "scope", "counts", "durations", "judge_ok", "no_evidence", "clamp"]:
         assert k in log
+    assert log["scope"]["requested"] == ["c"]
+    assert log["scope"]["used"] == ["c"]
     assert "judge_kind" in log
     assert "llm_dur" in log
 

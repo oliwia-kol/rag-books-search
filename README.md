@@ -1,33 +1,25 @@
 # RAG Books Search (CPU-only)
 
-Minimalna aplikacja do wyszukiwania informacji w zindeksowanych książkach technicznych
-z użyciem RAG (FAISS + sqlite + CrossEncoder judge).
+Streamlit UI for retrieval-augmented search across indexed technical books. The pipeline is CPU-only (FAISS + sqlite + CrossEncoder judge), so no GPU/CUDA is required or supported.
 
-Aplikacja:
-- zwraca tylko fragmenty poparte danymi z książek,
-- pokazuje gdzie znaleźć źródło (książka + sekcja),
-- unika halucynacji poprzez twarde reguły evidence,
-- działa **wyłącznie na CPU** (bez GPU / CUDA).
+## Quick start (fastest path)
 
-> CPU-only wymusza:
-> - instalację binariów Pytorch/FAISS z kanału CPU,
-> - brak zależności od GPU/CUDA w kodzie (w tym w CrossEncoder),
-> - budżety tokenowe/znakowe w LLM i kontekście, aby uniknąć przepełnień.
+```bash
+git clone <REPO_URL>
+cd rag-books-search
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-UI: Streamlit  
-Logika: `rag_engine.py`
+Then open http://localhost:8501.
 
----
+## Data layout (required corpora)
 
-## CPU-only i ograniczenia
-
-- brak wsparcia dla GPU/CUDA (pipeline i runtime muszą działać na CPU),
-- embeddingi normalizowane (IndexFlatIP) – przy zmianie modelu zachowaj spójny wymiar,
-- limity: domyślnie 10 wyników finalnych, kontekst LLM ~1400 znaków, prompt clamp ~2000 znaków.
-
-## Wydawcy i struktura danych (wymagana)
-
-Obsługiwani wydawcy (domyślni): **OReilly**, **Manning**, **Pearson**. Możesz dodać kolejnych, jeżeli zachowasz layout:
+Place CPU-friendly indexes under `data/` using the same structure for each publisher:
 
 ```
 data/
@@ -45,42 +37,11 @@ data/
     └── manifest.json
 ```
 
-Repo **nie wymaga** plików EPUB/PDF – tylko artefaktów indeksów.
+Only the index artifacts are needed; source PDFs/EPUBs are not required.
 
-Szybka weryfikacja środowiska (Python + zależności + artefakty danych):
+## Checks and tests
 
-```bash
-python scripts/check_env.py
-```
-
----
-
-## Jak uruchomić lokalnie (copy–paste)
-
-```bash
-git clone <REPO_URL>
-cd rag-books-search
-
-python -m venv .venv
-source .venv/bin/activate
-
-pip install -U pip
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
-pip install -r requirements.txt
-
-streamlit run app.py
-```
-
-Aplikacja będzie dostępna pod:
-http://localhost:8501
-
-## Testy i walidacja
-
-- Kompilacja kontraktu modułów: `python -m py_compile app.py rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py`
-- Szybki smoke/contract: `python smoke_ui_contract.py`
-- Walidacja jakości retrieval: `pytest tests/validation/test_retrieval_quality.py`
-- Walidacja bezpieczeństwa retrieval: `pytest tests/validation/test_retrieval_safety.py`
-- Pakiet smoke + walidacje (JUnit + opcjonalne testy slow): `pytest tests/validation tests/smoke --maxfail=1 --junitxml=reports/pytest-junit.xml`
-  - Użyj `-m "not slow"` jeżeli dane `data/` są niedostępne i chcesz pominąć kontrolę latencji.
-
-CI (`.github/workflows/ci.yml`) uruchamia kompilację modułów oraz `pytest tests/validation tests/smoke` na każdej gałęzi.
+- Quick environment sanity check (Python, deps, corpus files): `python scripts/check_env.py`
+- Contract smoke for UI + engine modules: `python smoke_ui_contract.py`
+- Compile entrypoints: `python -m py_compile app.py rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py`
+- Full test suite: `pytest`

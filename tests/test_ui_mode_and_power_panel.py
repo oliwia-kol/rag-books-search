@@ -26,6 +26,10 @@ class DummyPowerStreamlit:
         self.calls = []
         self.session_state = {}
 
+    def markdown(self, text, unsafe_allow_html=False):
+        self.calls.append(("markdown", text, unsafe_allow_html))
+        return text
+
     def expander(self, label, expanded=False):
         self.calls.append(("expander", label, expanded))
         return self

@@ -295,25 +295,6 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
 
-        # enrich report
-        rep = reports.get(k, {})
-        rep["dense_loaded"] = ok_dense
-        rep["db_loaded"] = db_exists
-        rep["dim_ok"] = dim_ok
-        rep["embed_dim"] = emb_dim
-        rep["ix_dim"] = dims.get(k)
-        if not dim_ok:
-            rep.setdefault("reasons", []).append("embed_dim_mismatch")
-        reports[k] = rep
-
-def get_startup_report(e: Eng) -> Dict[str, Any]:
-    return {
-        "embed_model": getattr(e.emb, "model_card", None) or getattr(e.emb, "model", None),
-        "embed_dim": getattr(e, "emb", None).get_sentence_embedding_dimension() if getattr(e, "emb", None) else None,
-        "corp": getattr(e, "corp_status", {}),
-    }
-
-
 def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
     rows = []
     for pub in CORP.keys():
@@ -365,16 +346,21 @@ def _normalize_query(qv: np.ndarray) -> np.ndarray:
 
 
 def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
-    meta = {"fallback_used": 0, "fallback_failed": 0, "clamped_k": False}
+    meta = {"fallback_used": 0, "fallback_failed": 0, "fallback_retries": 0, "clamped_k": False}
     if qv.size == 0:
         return [], meta
     if corp not in e.ix or corp not in e.dbp:
         return [], meta
     ix = e.ix[corp]
     try:
-        k_applied = max(1, min(int(k), HCFG["faiss_fetch_k"]))
+        k_requested = int(k)
+    except Exception:
+        k_requested = HCFG["faiss_fetch_k"]
+    try:
+        k_applied = max(1, min(k_requested, HCFG["faiss_fetch_k"]))
     except Exception:
         k_applied = max(1, HCFG["faiss_fetch_k"])
+    meta["k_requested"] = k_requested
     meta["k_applied"] = k_applied
     meta["k_clamped"] = meta["k_applied"] != meta["k_requested"]
     try:
@@ -451,7 +437,7 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             if not row:
                 continue
             cid, fp, sec, cidx, tx, _ = row
-            tx = (tx or "")[: HCFG["max_snippet_chars"]]
+            tx = _cap_tx(tx, max_len=SQLITE_TEXT_MAX)
             out.append(
                 {
                     "corp": corp,
@@ -459,12 +445,12 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
                     "fp": fp,
                     "sec": sec,
                     "cidx": int(cidx),
-                    "tx": _cap_tx(tx),
+                    "tx": tx,
                     # aliases
                     "section": sec,
                     "book": Path(fp).stem if fp else None,
                     "publisher": corp,
-                    "text": _cap_tx(tx),
+                    "text": tx,
                     "sem_score": float(s),
                 }
             )
@@ -574,6 +560,10 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         "k_requested": k_requested,
         "k_applied": k_applied,
         "k_clamped": k_applied != k_requested,
+        "dense_fallback": 0,
+        "dense_fallback_fail": 0,
+        "dense_clamped": False,
+        "lex_clamped": False,
         "fallback_retries": 0,
         "fallback_failed": 0,
     }
@@ -600,9 +590,9 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         meta["fetched_dense"] += len(d)
         meta["fetched_lex"] += len(l)
         meta["pubs_used"] += 1
-        meta["dense_fallback"] += dmeta.get("fallback_used", 0)
-        meta["dense_fallback_fail"] += dmeta.get("fallback_failed", 0)
-        meta["dense_clamped"] = meta["dense_clamped"] or dmeta.get("clamped_k", False)
+        meta["dense_fallback"] += d_meta.get("fallback_used", 0)
+        meta["dense_fallback_fail"] += d_meta.get("fallback_failed", 0)
+        meta["dense_clamped"] = meta["dense_clamped"] or d_meta.get("clamped_k", False)
         meta["lex_clamped"] = meta["lex_clamped"] or lmeta.get("clamped_k", False)
 
         dd = {x["cid"]: x for x in d}
@@ -700,13 +690,6 @@ def _blank_meta():
     cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
     return {"t": {k: 0.0 for k in META_T_KEYS}, "n": {k: 0 for k in META_N_KEYS}, "cap": cap, "flags": flags, "err": None, "log": {}}
-
-
-def get_startup_report(eng: Eng) -> Dict[str, Any]:
-    rep = getattr(eng, "corp_report", {}) or {}
-    ok = [k for k, v in rep.items() if v.get("ok")]
-    fail = [k for k in rep.keys() if k not in ok]
-    return {"ok": ok, "fail": fail, "by_corpus": rep}
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):

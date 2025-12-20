@@ -76,8 +76,17 @@ http://localhost:8501
 
 ## Testy i walidacja
 
-- Szybki smoke: `python smoke_ui_contract.py`
+Szybkie sprawdzenia:
+- Smoke UI contract: `python smoke_ui_contract.py`
 - Walidacja jakości retrieval: `pytest tests/validation/test_retrieval_quality.py`
-- Pakiet testów jednostkowych: `pytest tests`
+- Testy bezpieczeństwa retrieval: `pytest tests/validation/test_retrieval_safety.py`
+- Smoke/perf (można wyłączyć perf: `SKIP_PERF_CHECK=1`): `pytest tests/smoke`
 
-CI uruchamia smoke + walidację na gałęzi głównej.
+Aby lokalnie odwzorować CI (patrz `.github/workflows/ci.yml`):
+
+```bash
+python -m py_compile app.py rag_engine.py ui_shell.py ui_adapter.py ui_theme.py smoke_ui_contract.py
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest tests/validation tests/smoke --maxfail=1 --durations=25
+```
+
+CI uruchamia lint (jeśli dostępny), kompilację bajtkodu oraz pakiety `tests/validation` i `tests/smoke` z raportem JUnit.

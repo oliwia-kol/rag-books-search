@@ -27,7 +27,7 @@ def init_state():
     ss.setdefault("nm", True)           # show near-miss when ok=True
     ss.setdefault("nm_skip", False)     # skip near-miss computation to save cost
     ss.setdefault("jmin", 0.45)         # display min judge01
-    ss.setdefault("judge_mode", "proxy")  # judge mode: proxy / real / off
+    ss.setdefault("judge_mode", "real")  # judge mode: real / proxy / off
     if "jdg_mode" in ss:
         ss.setdefault("judge_mode", ss.get("jdg_mode"))
 

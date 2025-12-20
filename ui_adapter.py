@@ -248,13 +248,12 @@ def render_conf(rr: Dict[str, Any]):
             st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
     meta_flags = meta.get("flags", {})
     judge_mode = (meta.get("log", {}) or {}).get("judge_mode") or (meta.get("cap", {}) or {}).get("judge_kind")
-    veto_status = "applied" if meta_flags.get("veto_applied") else "not applied"
     veto_disabled = meta_flags.get("veto_disabled") or meta_flags.get("veto_disabled_when_proxy")
-    st.caption(
-        f"Judge mode: {judge_mode or 'unknown'} • veto {veto_status}"
-        + (" (disabled)" if veto_disabled else "")
-        + (" (proxy path)" if meta_flags.get("veto_disabled_when_proxy") else "")
-    )
+    veto_state = "applied" if meta_flags.get("veto_applied") else ("disabled" if veto_disabled else "ready")
+    proxy_lbl = "proxy" if meta_flags.get("judge_proxy") or judge_mode == "proxy" else judge_mode
+    st.caption(f"Judge mode: {proxy_lbl or 'unknown'} • veto {veto_state}")
+    if meta_flags.get("veto_disabled_when_proxy"):
+        st.caption("Veto is disabled when proxy/off paths are active.")
 
 
 def render_context_panel():
@@ -401,6 +400,7 @@ def render_power_panel(rr: Dict[str, Any]):
                     "mode": log.get("judge_mode") or meta.get("cap", {}).get("judge_kind"),
                     "kind": meta.get("cap", {}).get("judge_kind"),
                     "judge_ok": meta.get("cap", {}).get("judge_ok"),
+                    "judge_proxy": meta.get("flags", {}).get("judge_proxy"),
                 }
             )
         with c2:

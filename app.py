@@ -77,6 +77,7 @@ def main():
 
     st.title("RAG Books Search")
     st.caption("evidence-first • judge ON • CPU-friendly")
+    us.mode_panel()
 
     with st.form("q_form", clear_on_submit=False):
         st.text_input(

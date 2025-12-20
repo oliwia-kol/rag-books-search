@@ -136,6 +136,17 @@ def _score(h: Dict[str, Any]) -> float:
         return 0.0
 
 
+def _badge(txt: str, tone: str = "ghost") -> str:
+    tone_cls = {
+        "ghost": "rag-badge-ghost",
+        "strong": "rag-badge-strong",
+        "warn": "rag-badge-warn",
+        "err": "rag-badge-err",
+        "good": "rag-badge-good",
+    }.get(tone, "rag-badge-ghost")
+    return f"<span class='rag-badge {tone_cls}'>{txt}</span>"
+
+
 def _toast(msg: str):
     st.session_state["_toast"] = msg
 
@@ -202,7 +213,7 @@ def _rank_key(h: Dict[str, Any]) -> float:
 def render_answer(rr: Dict[str, Any]):
     ans = (rr or {}).get("answer") or ""
     with st.container(border=True):
-        st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="rag-card-top rag-card-mk"></div>', unsafe_allow_html=True)
         st.subheader("Answer")
         if ans:
             sents = _split_sents(ans)
@@ -234,6 +245,7 @@ def render_conf(rr: Dict[str, Any]):
     books = n.get("uniq_books", 0)
     secs = n.get("uniq_sections", 0)
     state = "Low" if v < 0.35 else "Medium" if v < 0.65 else "High"
+    jdg_mode = st.session_state.get("jdg_mode", "proxy")
     st.caption("Confidence")
     c1, c2 = st.columns([0.65, 0.35])
     with c1:
@@ -243,16 +255,20 @@ def render_conf(rr: Dict[str, Any]):
             st.progress(v)
             st.caption(f"{state} • coverage {cov}")
     with c2:
+        st.markdown(
+            f"<div class='rag-status-row'>{_badge(f'State: {state}', tone='strong')} {_badge(f'Coverage {cov}', tone='ghost')} {_badge(f'Judge {jdg_mode}', tone='good')}</div>",
+            unsafe_allow_html=True,
+        )
         st.caption(f"Books: {books} | Sections: {secs}")
         if books <= 1:
-            st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
+            st.markdown(_badge("Single-source warning", tone="warn"), unsafe_allow_html=True)
 
 
 def render_context_panel():
     ss = st.session_state
     h = ss.get("act_hit")
     with st.container(border=True):
-        st.markdown('<div id="ctx_panel" class="rag-card-top"></div>', unsafe_allow_html=True)
+        st.markdown('<div id="ctx_panel" class="rag-card-top rag-card-mk"></div>', unsafe_allow_html=True)
         c1, c2 = st.columns([0.78, 0.22])
         with c1:
             st.subheader("Context")
@@ -317,23 +333,30 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     j = _j01(h)
 
     with st.container(border=True):
-        st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
-        st.markdown(f"**{tt}**")
+        st.markdown('<div class="rag-card-top rag-card-mk"></div>', unsafe_allow_html=True)
+        st.markdown(f"<div class='rag-title'>{tt}</div>", unsafe_allow_html=True)
         meta = " | ".join([x for x in [pub, sec] if x])
         if meta:
-            st.caption(meta)
+            st.markdown(f"<div class='rag-meta'>{meta}</div>", unsafe_allow_html=True)
 
         # small quality line
-        st.caption(f"judge01 {j:.2f} | score {_score(h):.2f}")
-
+        badges = [
+            _badge(f"judge {j:.2f}", tone="good"),
+            _badge(f"score {_score(h):.2f}", tone="ghost"),
+        ]
         if near_miss:
-            st.caption("Near-miss candidate (no direct evidence).")
+            badges.append(_badge("Near miss", tone="warn"))
+        st.markdown(
+            f"<div class='rag-status-row rag-qual'>{' '.join(badges)}</div>",
+            unsafe_allow_html=True,
+        )
+
         st.markdown(_snippet(h, q=q, mx=260))
 
         b1, b2, b3 = st.columns(3)
         with b1:
             st.button(
-                "Pin",
+                "📌 Pin",
                 key=f"pin_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_pin_add,
@@ -341,7 +364,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
             )
         with b2:
             st.button(
-                "Copy",
+                "📋 Copy",
                 key=f"copy_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_clip_set,
@@ -349,7 +372,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
             )
         with b3:
             st.button(
-                "Expand",
+                "🗂 Expand",
                 key=f"exp_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_ctx_open,
@@ -373,6 +396,10 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
     nm = nm[:6]
     st.subheader("Near-miss evidence (no direct hit)")
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
+    st.markdown(
+        f"<div class='rag-near-miss rag-status-row'>{_badge('Near-miss mode', tone='warn')} {_badge('Judge rerank active', tone='strong')}</div>",
+        unsafe_allow_html=True,
+    )
     st.caption(
         f"Showing {len(nm)} candidates • threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
     )

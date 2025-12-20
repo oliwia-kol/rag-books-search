@@ -34,3 +34,11 @@ Legend: [x] done, [ ] todo
 ## Stage 1D: Regression / contract safety
 - [x] No API mismatch between `app.py` and `ui_*.py` (single validated pack)
 - [ ] Add tiny contract smoke script in repo (optional)
+
+## Stage 1E: Visual QA notes (Dec 19, 2025)
+- [x] Typography line-heights tightened for titles/meta; evidence snippets and captions share consistent spacing.
+- [x] Card affordances: hover lift + accent borders; Pin/Copy/Expand buttons styled with icons for clarity.
+- [x] Discoverability: status badges for judge mode, power panel/context guidance, and near-miss visibility.
+- [x] Responsive spacing validated on desktop + iPad widths; sidebar/header padding prevents overlap with main panels.
+- [x] Mobile Safari quirks addressed via padding and input font-size adjustments to avoid zoom/overlap.
+- [ ] Before/after screenshots (blocked: local browser tool could not reach forwarded port for capture).

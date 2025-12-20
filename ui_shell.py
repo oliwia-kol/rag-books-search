@@ -97,6 +97,44 @@ def _pin_lbl(p: dict) -> str:
     return t
 
 
+def _badge(txt: str, tone: str = "ghost") -> str:
+    tone_cls = {
+        "ghost": "rag-badge-ghost",
+        "strong": "rag-badge-strong",
+        "warn": "rag-badge-warn",
+        "good": "rag-badge-good",
+    }.get(tone, "rag-badge-ghost")
+    return f"<span class='rag-badge {tone_cls}'>{txt}</span>"
+
+
+def mode_panel():
+    ss = st.session_state
+    nm_state = "Showing near-miss" if ss.get("nm", True) else "Hidden when ok=True"
+    nm_tone = "good" if ss.get("nm", True) else "ghost"
+    if ss.get("nm_skip", False):
+        nm_state = "Near-miss skipped (faster)"
+        nm_tone = "warn"
+
+    with st.container(border=True):
+        st.markdown('<div class="rag-card-top rag-card-mk"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="rag-mode-panel">', unsafe_allow_html=True)
+        st.markdown("### Modes & visibility")
+        c1, c2, c3 = st.columns([0.34, 0.33, 0.33])
+        with c1:
+            st.caption("Judge selector")
+            st.markdown(_badge(f"Mode: {ss.get('jdg_mode', 'proxy').upper()}", tone="strong"), unsafe_allow_html=True)
+            st.caption("Reranker locked ON.")
+        with c2:
+            st.caption("Power panel")
+            st.markdown(_badge("Context + pins ready", tone="ghost"), unsafe_allow_html=True)
+            st.caption("Use Expand on a card to open Context.")
+        with c3:
+            st.caption("Near-miss")
+            st.markdown(_badge(nm_state, tone=nm_tone), unsafe_allow_html=True)
+            st.caption("Tweak near-miss in Advanced > Sidebar.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
 def sidebar(eng=None, startup_report=None):
     ss = st.session_state
     with st.sidebar:

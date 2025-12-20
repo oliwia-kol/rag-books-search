@@ -39,8 +39,10 @@ def _run(eng, q: str):
     if rr.get("meta", {}).get("err"):
         err = rr["meta"]["err"]
         ss["_ui_err"] = us.format_ui_error(err.get("id"), err.get("msg"))
+        ss["_ui_err_id"] = err.get("id")
     else:
         ss["_ui_err"] = None
+        ss["_ui_err_id"] = None
 
 
 def _on_search():
@@ -53,6 +55,7 @@ def _on_search():
         us.qp_set(q=q)
     except Exception as e:
         ss["_ui_err"] = us.format_ui_error(None, f"{type(e).__name__}: {e}")
+        ss["_ui_err_id"] = None
 
 
 def main():

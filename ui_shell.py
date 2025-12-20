@@ -40,6 +40,7 @@ def init_state():
 
     ss.setdefault("_toast", None)
     ss.setdefault("_ui_err", None)
+    ss.setdefault("_ui_err_id", None)
     ss.setdefault("_scroll_ctx", False)
 
 
@@ -54,20 +55,32 @@ def toast_flush():
         ss["_toast"] = None
 
 
-def global_error_box():
+def global_error_box(renderer=None):
     ss = st.session_state
     err = ss.get("_ui_err")
     if not err:
         return
+    payload = {
+        "message": err,
+        "error_id": ss.get("_ui_err_id"),
+        "hint": "If this persists, reload the page and retry the query. Error IDs help with debugging.",
+    }
+    if renderer:
+        renderer(payload)
+        return payload
     with st.container(border=True):
         st.error(err)
         c1, c2 = st.columns([0.75, 0.25])
         with c2:
             if st.button("Dismiss", key="err_dismiss"):
                 ss["_ui_err"] = None
+                ss["_ui_err_id"] = None
                 st.rerun()
         with c1:
-            st.caption("If this persists, reload the page and retry the query. Error IDs help with debugging.")
+            if ss.get("_ui_err_id"):
+                st.caption(f"{payload['hint']} Error ID: {ss['_ui_err_id']}")
+            else:
+                st.caption(payload["hint"])
 
 
 def format_ui_error(err_id: str | None, msg: str | None) -> str:

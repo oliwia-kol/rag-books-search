@@ -22,6 +22,7 @@ def init_state():
 
     # stable defaults
     ss.setdefault("adv", False)
+    ss.setdefault("mode", "quick")
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
     ss.setdefault("srt", "Best evidence")
     ss.setdefault("nm", True)           # show near-miss when ok=True
@@ -119,10 +120,35 @@ def _pin_lbl(p: dict) -> str:
     return t
 
 
+def mode_selector():
+    ss = st.session_state
+    opts = re.mode_options()
+    names = [o["name"] for o in opts]
+    labels = {o["name"]: f"{o['label']}" for o in opts}
+    desc = {o["name"]: o.get("description", "") for o in opts}
+    try:
+        idx = names.index(ss.get("mode", "quick"))
+    except ValueError:
+        idx = 0
+    choice = st.radio(
+        "Mode",
+        options=names,
+        index=idx,
+        format_func=lambda v: f"{labels.get(v, v.title())}",
+        help="Quick = speed, Exact = deeper search for precise citations.",
+        key="mode",
+    )
+    st.caption(f"{labels.get(choice, choice.title())}: {desc.get(choice, '')}")
+    return choice
+
+
 def sidebar(eng=None, startup_report=None):
     ss = st.session_state
     with st.sidebar:
         st.toggle("Advanced", key="adv")
+        st.caption("Mode")
+        mode_selector()
+        st.caption("Speed vs depth trade-off")
 
         if eng is not None:
             rep = re.get_startup_report(eng)

@@ -155,7 +155,7 @@ FAISS_FALLBACK_RETRY_MAX = 8
 HCFG = {
     "faiss_fetch_k": 60,
     "fts_fetch_k": 60,
-    "final_k": 10,  # practical for work
+    "final_k": 10,  # default (per-mode overrides below)
     "mmr_k": 20,
     "mmr_lambda": 0.55,
     "min_faiss_score": 0.18,
@@ -182,6 +182,26 @@ HCFG = {
     },
     "jdg_cache_ttl": 600,
     "jdg_cache_size": 256,
+    "modes": {
+        "quick": {
+            "label": "Quick",
+            "description": "Faster answers with tighter retrieval and context budgets.",
+            "final_k": 8,
+            "mmr_k": 16,
+            "dense_k": 24,
+            "lex_k": 24,
+            "use_jdg": True,
+        },
+        "exact": {
+            "label": "Find Exact Quote",
+            "description": "Deeper search for citations with larger budgets and k.",
+            "final_k": 12,
+            "mmr_k": 28,
+            "dense_k": 40,
+            "lex_k": 40,
+            "use_jdg": True,
+        },
+    },
 }
 
 FTS_CFG = {"batch": 4000, "use_porter": False}
@@ -249,6 +269,44 @@ def _budget_for_mode(mode: str, overrides: Optional[Dict[str, int]] = None) -> D
         "prompt_chars": overrides.get("prompt_chars", b.get("prompt_chars", default.get("prompt_chars", HCFG["max_prompt_chars"]))),
         "prompt_tokens": overrides.get("prompt_tokens", b.get("prompt_tokens", default.get("prompt_tokens", HCFG["max_prompt_chars"]))),
     }
+
+
+def _mode_cfg(mode: Optional[str]) -> Dict[str, Any]:
+    mode_key = (mode or "quick").lower()
+    modes = HCFG.get("modes") or {}
+    default = modes.get("quick", {}) or {}
+    cfg = modes.get(mode_key, {}) or {}
+    merged = {**default, **cfg}
+    return {
+        "name": mode_key,
+        "label": merged.get("label", mode_key.title()),
+        "description": merged.get("description", ""),
+        "final_k": int(merged.get("final_k", HCFG["final_k"])),
+        "mmr_k": int(merged.get("mmr_k", HCFG["mmr_k"])),
+        "dense_k": int(merged.get("dense_k", HCFG["dense_k"])),
+        "lex_k": int(merged.get("lex_k", HCFG["lex_k"])),
+        "use_jdg": bool(merged.get("use_jdg", True)),
+    }
+
+
+def get_mode_cfg(mode: Optional[str] = None) -> Dict[str, Any]:
+    return _mode_cfg(mode)
+
+
+def mode_options() -> List[Dict[str, Any]]:
+    modes = HCFG.get("modes") or {}
+    out = []
+    for name, cfg in modes.items():
+        out.append(
+            {
+                "name": name,
+                "label": cfg.get("label", name.title()),
+                "description": cfg.get("description", ""),
+            }
+        )
+    if not out:
+        out.append({"name": "quick", "label": "Quick", "description": "Faster answers."})
+    return out
 
 # -----------------------------
 # FTS helpers
@@ -646,7 +704,16 @@ def lex_retrieve(e: Eng, corp: str, q: str, k: int | None = None):
     return rows, {"clamped_k": clamp_flag}
 
 
-def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.ndarray | None = None):
+def hybrid_retrieve(
+    e: Eng,
+    q: str,
+    k: int = HCFG["final_k"],
+    pubs=None,
+    qv: np.ndarray | None = None,
+    mmr_k: Optional[int] = None,
+    dense_k: Optional[int] = None,
+    lex_k: Optional[int] = None,
+):
     """Dense+lexical hybrid retrieval across selected publishers."""
     if qv is None:
         qv = embed_query(e, q)
@@ -655,7 +722,8 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         k_requested = int(k)
     except Exception:
         k_requested = HCFG["final_k"]
-    k_applied = max(1, min(k_requested, HCFG["mmr_k"]))
+    mmr_cap = int(mmr_k) if mmr_k is not None else HCFG["mmr_k"]
+    k_applied = max(1, min(k_requested, mmr_cap))
 
     pubs = pubs or list(e.corp.keys())
     cands = []
@@ -670,8 +738,15 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         "k_requested": k_requested,
         "k_applied": k_applied,
         "k_clamped": k_applied != k_requested,
+        "mmr_cap": mmr_cap,
         "fallback_retries": 0,
         "fallback_failed": 0,
+        "dense_k": None,
+        "lex_k": None,
+        "dense_fallback": 0,
+        "dense_fallback_fail": 0,
+        "dense_clamped": False,
+        "lex_clamped": False,
     }
 
     for corp in pubs:
@@ -680,7 +755,9 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
 
         t_d0 = _t0()
         if use_dense:
-            d, d_meta = dense_retrieve(e, corp, qv, k=HCFG["dense_k"])
+            dense_req = dense_k or HCFG["dense_k"]
+            d, d_meta = dense_retrieve(e, corp, qv, k=dense_req)
+            meta["dense_k"] = dense_req
             meta["fallback_retries"] += d_meta.get("fallback_retries", 0)
             meta["fallback_failed"] += d_meta.get("fallback_failed", 0)
             meta["k_clamped"] = meta["k_clamped"] or bool(d_meta.get("k_clamped"))
@@ -688,7 +765,9 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
             d, d_meta = [], {"k_clamped": False}
         meta["t_dense"] += _dt(t_d0)
         t_l0 = _t0()
-        l, lmeta = lex_retrieve(e, corp, q, k=HCFG["lex_k"])
+        lex_req = lex_k or HCFG["lex_k"]
+        l, lmeta = lex_retrieve(e, corp, q, k=lex_req)
+        meta["lex_k"] = lex_req
         meta["t_lex"] += _dt(t_l0)
 
         meta["dense_hits"] += len(d)
@@ -751,7 +830,7 @@ def hybrid_retrieve(e: Eng, q: str, k: int = HCFG["final_k"], pubs=None, qv: np.
         for s in sigs:
             seen.add(s)
         out.append(h)
-        if len(out) >= HCFG["mmr_k"]:
+        if len(out) >= k_applied:
             break
 
     meta["cands"] = len(cands)
@@ -1305,6 +1384,7 @@ def _log_event(meta, mode, pubs_requested, qlen, hits=None):
         payload = {
             "ts": time.time(),
             "mode": mode,
+            "mode_cfg": meta.get("mode_cfg", {}),
             "scope": {"requested": list(pubs_requested or []), "used": scope_used},
             "qlen": int(qlen or 0),
             "counts": dict(meta.get("n", {})),
@@ -1367,7 +1447,18 @@ def run_query(
 ):
     t_total = _t0()
     meta = _blank_meta()
-    use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
+    mode_cfg = _mode_cfg(mode)
+    mode_name = mode_cfg["name"]
+    meta["mode"] = mode_cfg["name"]
+    meta["mode_cfg"] = mode_cfg
+    meta["cap"]["mode"] = mode_cfg["name"]
+    meta["cap"]["mode_label"] = mode_cfg["label"]
+    meta["cap"]["mode_desc"] = mode_cfg["description"]
+    meta.setdefault("log", {})["mode"] = mode_cfg["name"]
+    meta["log"]["mode_label"] = mode_cfg["label"]
+    meta["log"]["mode_description"] = mode_cfg["description"]
+    meta["log"]["mode_cfg"] = mode_cfg
+    use_jdg_flag = (mode_cfg.get("use_jdg", True) if use_jdg is None else bool(use_jdg)) and USE_JDG_DEFAULT
     jdg_mode = (judge_mode or jdg_mode or "real").lower()
     if jdg_mode not in {"real", "proxy", "off"}:
         jdg_mode = "proxy"
@@ -1376,14 +1467,14 @@ def run_query(
         use_jdg_flag = False
     compute_nm_flag = True if compute_near_miss is None else bool(compute_near_miss)
     nm_flag = compute_nm_flag and (nm if nm is not None else (show_nm if show_nm is not None else True))
-    mode = (mode or "quick").lower()
     budget_overrides = {
         "ctx_chars": ctx_char_budget,
         "ctx_tokens": ctx_tok_budget,
         "prompt_chars": prompt_char_budget,
         "prompt_tokens": prompt_tok_budget,
     }
-    budget = _budget_for_mode(mode, {k: v for k, v in budget_overrides.items() if v is not None})
+    budget = _budget_for_mode(mode_name, {k: v for k, v in budget_overrides.items() if v is not None})
+    mode_cfg["budget"] = budget
     meta["cap"]["has_emb"] = e.emb is not None
     meta["cap"]["dense_ok"] = bool(getattr(e, "ix", {}))
     if not meta["cap"]["has_emb"]:
@@ -1439,7 +1530,19 @@ def run_query(
 
         # retrieve
         t_ret_dense_lex = _t0()
-        hs, rmeta = hybrid_retrieve(e, q, pubs=pubs, qv=qv)
+        mmr_k_mode = mode_cfg.get("mmr_k", HCFG["mmr_k"])
+        dense_k_mode = mode_cfg.get("dense_k", HCFG["dense_k"])
+        lex_k_mode = mode_cfg.get("lex_k", HCFG["lex_k"])
+        hs, rmeta = hybrid_retrieve(
+            e,
+            q,
+            pubs=pubs,
+            qv=qv,
+            k=mmr_k_mode,
+            mmr_k=mmr_k_mode,
+            dense_k=dense_k_mode,
+            lex_k=lex_k_mode,
+        )
         meta["t"]["dense"] = rmeta.get("t_dense", 0.0)
         meta["t"]["lex"] = rmeta.get("t_lex", 0.0)
         meta["t"]["fuse"] = _dt(t_ret_dense_lex) - meta["t"]["dense"] - meta["t"]["lex"]
@@ -1458,11 +1561,19 @@ def run_query(
         meta["cap"]["k_requested"] = rmeta.get("k_requested")
         meta["cap"]["k_applied"] = rmeta.get("k_applied")
         meta["cap"]["k_clamped"] = bool(rmeta.get("k_clamped"))
-        # mode-aware clamp for quick vs deep
-        if mode.startswith("deep"):
-            pass
-        else:
-            hs = hs[: HCFG["final_k"]]
+        meta["flags"]["dense_clamped"] = bool(rmeta.get("dense_clamped"))
+        meta["flags"]["lex_clamped"] = bool(rmeta.get("lex_clamped"))
+        meta["clamp"]["retrieval"] = {
+            "k_requested": rmeta.get("k_requested"),
+            "k_applied": rmeta.get("k_applied"),
+            "k_clamped": rmeta.get("k_clamped"),
+            "mmr_cap": rmeta.get("mmr_cap"),
+            "dense_k": rmeta.get("dense_k"),
+            "lex_k": rmeta.get("lex_k"),
+            "dense_clamped": rmeta.get("dense_clamped"),
+            "lex_clamped": rmeta.get("lex_clamped"),
+        }
+        hs = hs[: mode_cfg.get("final_k", HCFG["final_k"])]
 
         # sort preference (UI-level)
         s = (sort or "").strip().lower()
@@ -1585,7 +1696,7 @@ def run_query(
                     ans_txt = llm_call(
                         prompt_clamped,
                         cfg={
-                            "mode": mode,
+                            "mode": mode_name,
                             "char_budget": budget["prompt_chars"],
                             "tok_budget": budget["prompt_tokens"],
                         },
@@ -1604,7 +1715,7 @@ def run_query(
                 meta["err_llm"] = None
             meta["t"]["llm"] = _dt(t_llm)
             meta["t"]["total"] = _dt(t_total)
-            _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=dr)
+            _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=dr)
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
@@ -1631,12 +1742,12 @@ def run_query(
         meta["flags"]["llm_bypassed"] = True
         meta["flags"]["llm_used"] = False
         meta["err_llm"] = None
-        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=(hs3 or []) + (nm_hits or []))
+        _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q), hits=(hs3 or []) + (nm_hits or []))
         # LLM path for soft no-evidence is intentionally disabled; return empty answer
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:
         msg = _safe_msg(ex)
         meta["err"] = {"where": "run_query", "msg": msg, "id": _err_id(msg)}
         meta["t"]["total"] = _dt(t_total)
-        _log_event(meta, mode, pubs or list(getattr(e, "corp", {}).keys()), len(q))
+        _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)

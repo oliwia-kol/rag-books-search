@@ -146,9 +146,16 @@ def sidebar(eng=None, startup_report=None):
     ss = st.session_state
     with st.sidebar:
         st.toggle("Advanced", key="adv")
+        st.markdown(
+            "<div class='mode-kicker'>"
+            "<span class='ui-badge ui-badge-strong'>Mode selector</span>"
+            "<span class='ui-badge ui-badge-muted'>Speed vs depth</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         st.caption("Mode")
         mode_selector()
-        st.caption("Speed vs depth trade-off")
+        st.caption("Balance response speed and citation depth.")
 
         if eng is not None:
             rep = re.get_startup_report(eng)

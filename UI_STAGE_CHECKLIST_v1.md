@@ -34,3 +34,9 @@ Legend: [x] done, [ ] todo
 ## Stage 1D: Regression / contract safety
 - [x] No API mismatch between `app.py` and `ui_*.py` (single validated pack)
 - [ ] Add tiny contract smoke script in repo (optional)
+
+## Visual QA (current pass)
+- [x] Typography/spacing tightened for titles/meta; consistent line-heights on desktop + iPad breakpoints.
+- [x] Cards: hover affordances + clearer Pin/Copy/Expand buttons; badges for judge mode and single-source warnings.
+- [x] Layout spacing tuned so sidebar/panels avoid header overlap; Safari/iPadOS: touch-friendly padding + font smoothing applied.
+- [x] Screenshots captured externally for before/after verification; Safari/iPad tweaks noted above.

@@ -312,12 +312,21 @@ def render_conf(rr: Dict[str, Any]):
             st.progress(v)
             st.caption(f"{cov_state['state'].title()} • coverage {cov}")
         st.markdown(badge, unsafe_allow_html=True)
+        badges = [
+            f'<span class="ui-badge ui-badge-soft">{cov_state["state"].title()} conf</span>',
+            f'<span class="ui-badge ui-badge-muted">{cov} coverage</span>',
+        ]
+        meta_flags = meta.get("flags", {})
+        judge_mode = (meta.get("log", {}) or {}).get("judge_mode") or (meta.get("cap", {}) or {}).get("judge_kind")
+        proxy_lbl = "proxy" if meta_flags.get("judge_proxy") or judge_mode == "proxy" else judge_mode
+        badges.append(f'<span class="ui-badge ui-badge-strong">Judge: {proxy_lbl or "unknown"}</span>')
+        if counts["single_source"]:
+            badges.append('<span class="ui-badge ui-badge-warn">Single source</span>')
+        st.markdown(f"<div class='badge-row'>{''.join(badges)}</div>", unsafe_allow_html=True)
     with c2:
         st.caption(f"Books: {counts['books']} | Sections: {counts['sections']} | Publishers: {counts['publishers']}")
         if counts["single_source"]:
             st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
-    meta_flags = meta.get("flags", {})
-    judge_mode = (meta.get("log", {}) or {}).get("judge_mode") or (meta.get("cap", {}) or {}).get("judge_kind")
     veto_disabled = meta_flags.get("veto_disabled") or meta_flags.get("veto_disabled_when_proxy")
     veto_state = "applied" if meta_flags.get("veto_applied") else ("disabled" if veto_disabled else "ready")
     proxy_lbl = "proxy" if meta_flags.get("judge_proxy") or judge_mode == "proxy" else judge_mode
@@ -397,10 +406,18 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
 
     with st.container(border=True):
         st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
-        st.markdown(f"**{tt}**")
+        st.markdown(f'<div class="rag-title">{html.escape(tt)}</div>', unsafe_allow_html=True)
         meta = " | ".join([x for x in [pub, sec] if x])
         if meta:
-            st.caption(meta)
+            st.markdown(f'<div class="rag-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
+
+        pills = [
+            f'<span class="ui-badge ui-badge-soft">#{i+1}</span>',
+            f'<span class="ui-badge ui-badge-soft">judge {j:.2f}</span>',
+        ]
+        if near_miss:
+            pills.append('<span class="ui-badge ui-badge-warn">Near miss</span>')
+        st.markdown(f"<div class='badge-row'>{''.join(pills)}</div>", unsafe_allow_html=True)
 
         score_line = f"judge01 {j:.2f} | score {_score(h):.2f}"
         if near_miss:
@@ -410,32 +427,35 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
         else:
             # small quality line
             st.caption(score_line)
-        st.markdown(_snippet(h, q=q, mx=260))
+        st.markdown(_snippet(h, q=q, mx=260), unsafe_allow_html=True)
 
         b1, b2, b3 = st.columns(3)
         with b1:
             st.button(
-                "Pin",
+                "📌 Pin",
                 key=f"pin_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_pin_add,
                 args=(h,),
+                help="Pin this evidence to the sidebar",
             )
         with b2:
             st.button(
-                "Copy",
+                "📄 Copy",
                 key=f"copy_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_clip_set,
                 args=(h,),
+                help="Copy citation to clipboard",
             )
         with b3:
             st.button(
-                "Expand",
+                "↗ Expand",
                 key=f"exp_{_cid(h)}_{_cidx(h)}_{i}",
                 use_container_width=True,
                 on_click=_ctx_open,
                 args=(h,),
+                help="Open the context panel",
             )
 
         with st.expander("Why this card?"):
@@ -462,6 +482,11 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
     header = f"Near misses ({len(nm)})"
     with st.expander(header, expanded=False):
         st.subheader("Near misses (no direct hit)")
+        st.markdown(
+            "<div class='badge-row'><span class='ui-badge ui-badge-warn'>Below threshold</span>"
+            "<span class='ui-badge ui-badge-soft'>Check when coverage is weak</span></div>",
+            unsafe_allow_html=True,
+        )
         st.info(
             f"{reason} Threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
         )
@@ -479,6 +504,11 @@ def render_power_panel(rr: Dict[str, Any]):
     mode_cfg = meta.get("mode_cfg", {}) or {}
     hits = list((rr or {}).get("hits") or [])
     with st.expander("Power panel (debug)", expanded=True):
+        st.markdown(
+            "<div class='badge-row'><span class='ui-badge ui-badge-strong'>Power panel</span>"
+            "<span class='ui-badge ui-badge-soft'>Debug & timing</span></div>",
+            unsafe_allow_html=True,
+        )
         st.caption(f"Mode: {mode_cfg.get('label', meta.get('mode', 'quick')).title()} — {mode_cfg.get('description', '')}")
         st.write(
             {

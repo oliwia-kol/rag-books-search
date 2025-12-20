@@ -217,6 +217,7 @@ META_FLAG_KEYS = [
     "veto_applied",
     "veto_disabled",
     "veto_disabled_when_proxy",
+    "judge_proxy",
     "llm_used",
     "llm_bypassed",
     "dense_clamped",
@@ -787,6 +788,7 @@ def _blank_meta():
     cap["k_applied"] = None
     cap["k_clamped"] = False
     flags = {k: False for k in META_FLAG_KEYS}
+    flags["judge_proxy"] = False
     return {
         "t": {k: 0.0 for k in META_T_KEYS},
         "n": {k: 0 for k in META_N_KEYS},
@@ -872,9 +874,9 @@ def _get_jdg():
         return None
 
 
-_JDG_CACHE: Dict[Tuple[str, str], Tuple[float, float]] = {}
-_JDG_CACHE_MAX = 256
-_JDG_CACHE_TTL = 300.0  # seconds
+_JDG_CACHE: Dict[Tuple[str, str], Dict[str, float]] = {}
+_JDG_CACHE_MAX = int(HCFG.get("jdg_cache_size", 256))
+_JDG_CACHE_TTL = float(HCFG.get("jdg_cache_ttl", 300.0))  # seconds
 
 
 def _chunk_hash(h: Dict[str, Any]) -> str:
@@ -890,67 +892,110 @@ def _chunk_hash(h: Dict[str, Any]) -> str:
     return digest
 
 
+def _jdg_cache_prune(now: Optional[float] = None):
+    now = now or time.time()
+    expire_keys = [k for k, v in _JDG_CACHE.items() if now - v.get("ts", 0.0) > _JDG_CACHE_TTL]
+    for k in expire_keys:
+        _JDG_CACHE.pop(k, None)
+    if len(_JDG_CACHE) > _JDG_CACHE_MAX:
+        # drop oldest entries first
+        over = max(0, len(_JDG_CACHE) - _JDG_CACHE_MAX)
+        for k, _ in sorted(_JDG_CACHE.items(), key=lambda kv: kv[1].get("ts", 0.0))[:over]:
+            _JDG_CACHE.pop(k, None)
+
+
+def _jdg_cache_get(key: Tuple[str, str]) -> Optional[float]:
+    now = time.time()
+    entry = _JDG_CACHE.get(key)
+    if not entry:
+        return None
+    ts = entry.get("ts", 0.0)
+    if now - ts > _JDG_CACHE_TTL:
+        _JDG_CACHE.pop(key, None)
+        return None
+    return entry.get("score")
+
+
+def _jdg_cache_set(key: Tuple[str, str], score: float):
+    _JDG_CACHE[key] = {"score": float(score), "ts": time.time()}
+    _jdg_cache_prune()
+
+
 def _jdg_rerank(q, hs, mode: str = "proxy"):
     mode = (mode or "proxy").lower()
-    if mode == "off":
+    if mode not in {"real", "proxy", "off"}:
+        mode = "proxy"
+
+    def _proxy(label: str, proxy_flag: bool):
         for h in hs:
             js = float(h.get("score", 0.0))
             h["_jdg"] = js
             h["judge01"] = js
         hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
-        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": "off"}
+        return hs, {
+            "ok": False,
+            "t": 0.0,
+            "n": len(hs),
+            "kind": label,
+            "cache_hits": 0,
+            "cache_misses": len(hs),
+            "t_cache": 0.0,
+            "t_pred": 0.0,
+            "proxy": proxy_flag,
+        }
+
+    if mode == "off":
+        return _proxy("off", False)
 
     use_real = mode == "real"
     j = _get_jdg() if use_real else None
     if j is None:
-        # fallback: use normalized score as judge proxy
-        for h in hs:
-            js = float(h.get("score", 0.0))
-            h["_jdg"] = js
-            h["judge01"] = js
-        hs.sort(key=lambda x: float(x.get("judge01", 0.0)), reverse=True)
-        kind = "proxy_score" if mode != "off" else "off"
-        return hs, {"ok": False, "t": 0.0, "n": len(hs), "kind": kind, "cache_hits": 0}
+        return _proxy("proxy_score", True)
 
     tp = hs[: min(K_JDG, len(hs))]
     pairs = [(q, (h.get("text") or "")[:1200]) for h in tp]
     t0 = time.time()
     sc = []
     cache_hits = 0
+    cache_misses = 0
     t_cache = 0.0
     t_pred = 0.0
+    _jdg_cache_prune()
     try:
         for h, pr in zip(tp, pairs):
             t_loop = time.time()
-            now = time.time()
             key = (pr[0], _chunk_hash(h))
-            cached = _JDG_CACHE.get(key)
-            if cached and now - cached[0] <= _JDG_CACHE_TTL:
-                sc.append(cached[1])
+            cached = _jdg_cache_get(key)
+            if cached is not None:
+                sc.append(float(cached))
                 cache_hits += 1
                 t_cache += time.time() - t_loop
                 continue
+            cache_misses += 1
             t_pred0 = time.time()
             scr = float(j.predict([pr])[0])
             t_pred += time.time() - t_pred0
             sc.append(scr)
-            _JDG_CACHE[key] = (scr, time.time())
-            if len(_JDG_CACHE) > _JDG_CACHE_MAX:
-                # drop arbitrary oldest key
-                _JDG_CACHE.pop(next(iter(_JDG_CACHE)))
-        # prune expired
-        if _JDG_CACHE:
-            expire_keys = [k for k, v in _JDG_CACHE.items() if now - v[1] > _JDG_CACHE_TTL]
-            for k in expire_keys:
-                _JDG_CACHE.pop(k, None)
+            _jdg_cache_set(key, scr)
     except Exception:
-        return hs, {"ok": False, "t": time.time() - t0, "n": len(tp), "kind": "error", "cache_hits": cache_hits, "cache_misses": len(tp) - cache_hits, "t_cache": t_cache, "t_pred": t_pred}
+        return _proxy("proxy_score", True)
     t1 = time.time()
     for h, s in zip(tp, sc):
         h["_jdg"] = float(s)
         h["judge01"] = _sig(h["_jdg"])
     tp.sort(key=lambda x: float(x.get("_jdg", -1e9)), reverse=True)
-    return tp + hs[len(tp) :], {"ok": True, "t": t1 - t0, "n": len(tp), "kind": "cross_encoder", "cache_hits": cache_hits, "cache_misses": len(tp) - cache_hits, "t_cache": t_cache, "t_pred": t_pred}
+    meta = {
+        "ok": True,
+        "t": t1 - t0,
+        "n": len(tp),
+        "kind": "cross_encoder",
+        "cache_hits": cache_hits,
+        "cache_misses": cache_misses,
+        "t_cache": t_cache,
+        "t_pred": t_pred,
+        "proxy": False,
+    }
+    return tp + hs[len(tp) :], meta
 
 
 def _disp_flt(hs, min_keep=MNK, jmin=J_DISP_MIN, use_jdg=USE_JDG_DEFAULT):
@@ -1246,9 +1291,12 @@ def run_query(
     t_total = _t0()
     meta = _blank_meta()
     use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
-    jdg_mode = (judge_mode or jdg_mode or "proxy").lower()
-    if not use_jdg_flag:
+    jdg_mode = (judge_mode or jdg_mode or "real").lower()
+    if jdg_mode not in {"real", "proxy", "off"}:
+        jdg_mode = "proxy"
+    if (not use_jdg_flag) or jdg_mode == "off":
         jdg_mode = "off"
+        use_jdg_flag = False
     nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
     mode = (mode or "quick").lower()
     budget_overrides = {
@@ -1359,6 +1407,13 @@ def run_query(
         if not use_jdg_flag:
             for h in hs2:
                 h.setdefault("judge01", float(h.get("score", 0.0)))
+            meta["cap"]["judge_kind"] = "off"
+            meta["cap"]["judge_ok"] = False
+            meta["flags"]["veto_disabled"] = True
+            meta["flags"]["judge_proxy"] = False
+            meta["flags"]["veto_disabled_when_proxy"] = jdg_mode in {"proxy", "off"}
+            meta.setdefault("log", {})["judge_cache_hits"] = 0
+            meta.setdefault("log", {})["judge_cache_misses"] = 0
 
         # judge rerank (display order)
         hs3 = None
@@ -1373,12 +1428,14 @@ def run_query(
             meta["t"]["judge_cache"] = float(meta_jdg.get("t_cache", 0.0))
             meta["t"]["judge_pred"] = float(meta_jdg.get("t_pred", meta_jdg.get("t", 0.0)))
             meta.setdefault("log", {})["judge_cache_hits"] = int(meta_jdg.get("cache_hits", 0))
-            meta.setdefault("log", {})["judge_cache_misses"] = int(meta_jdg.get("cache_misses", max(0, meta_jdg.get("n", 0) - meta_jdg.get("cache_hits", 0))))
+            meta.setdefault("log", {})["judge_cache_misses"] = int(
+                meta_jdg.get("cache_misses", max(0, meta_jdg.get("n", 0) - meta_jdg.get("cache_hits", 0)))
+            )
             meta.setdefault("log", {})["judge_mode"] = jdg_mode
+            meta["flags"]["judge_proxy"] = bool(meta_jdg.get("proxy"))
             if meta_jdg.get("kind") != "cross_encoder":
                 meta["flags"]["veto_disabled"] = True
-                meta["flags"]["veto_disabled_when_proxy"] = True
-            if jdg_mode == "proxy":
+            if jdg_mode == "proxy" or meta["flags"]["judge_proxy"]:
                 meta["flags"]["veto_disabled_when_proxy"] = True
             veto = False
             if disp_use_jdg:
@@ -1390,8 +1447,7 @@ def run_query(
             meta["t"]["judge_pred"] = 0.0
             meta.setdefault("log", {})["judge_mode"] = jdg_mode
             meta["flags"]["veto_disabled"] = True
-            if jdg_mode == "proxy":
-                meta["flags"]["veto_disabled_when_proxy"] = True
+            meta["flags"]["veto_disabled_when_proxy"] = jdg_mode in {"proxy", "off"}
 
         t_disp = _t0()
         hs3, _ = _disp_flt(

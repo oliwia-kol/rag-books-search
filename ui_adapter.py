@@ -246,6 +246,15 @@ def render_conf(rr: Dict[str, Any]):
         st.caption(f"Books: {books} | Sections: {secs}")
         if books <= 1:
             st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
+    meta_flags = meta.get("flags", {})
+    judge_mode = (meta.get("log", {}) or {}).get("judge_mode") or (meta.get("cap", {}) or {}).get("judge_kind")
+    veto_status = "applied" if meta_flags.get("veto_applied") else "not applied"
+    veto_disabled = meta_flags.get("veto_disabled") or meta_flags.get("veto_disabled_when_proxy")
+    st.caption(
+        f"Judge mode: {judge_mode or 'unknown'} • veto {veto_status}"
+        + (" (disabled)" if veto_disabled else "")
+        + (" (proxy path)" if meta_flags.get("veto_disabled_when_proxy") else "")
+    )
 
 
 def render_context_panel():
@@ -378,3 +387,32 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
     )
     for i, h in enumerate(nm):
         render_card(h, q, i, near_miss=True)
+
+
+def render_power_panel(rr: Dict[str, Any]):
+    meta = (rr or {}).get("meta") or {}
+    log = meta.get("log", {}) or {}
+    with st.expander("Power panel (debug)", expanded=False):
+        st.caption("Judge + cache stats")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write(
+                {
+                    "mode": log.get("judge_mode") or meta.get("cap", {}).get("judge_kind"),
+                    "kind": meta.get("cap", {}).get("judge_kind"),
+                    "judge_ok": meta.get("cap", {}).get("judge_ok"),
+                }
+            )
+        with c2:
+            st.write(
+                {
+                    "cache_hits": log.get("judge_cache_hits", 0),
+                    "cache_misses": log.get("judge_cache_misses", 0),
+                    "t_cache": meta.get("t", {}).get("judge_cache", 0.0),
+                    "t_pred": meta.get("t", {}).get("judge_pred", 0.0),
+                }
+            )
+        st.caption("Timings (s)")
+        st.json(meta.get("t", {}))
+        st.caption("Flags")
+        st.json(meta.get("flags", {}))

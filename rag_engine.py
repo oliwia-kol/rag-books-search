@@ -190,7 +190,7 @@ DIRECT_MIN = 1
 
 # contract constants
 RET_KEYS = ["ok", "no_evidence", "answer", "hits", "near_miss", "coverage", "meta"]
-META_T_KEYS = ["total", "embed", "dense", "lex", "fuse", "cut", "rerank", "disp_flt", "direct", "near_miss", "llm"]
+META_T_KEYS = ["total", "embed", "dense", "lex", "fuse", "cut", "rerank", "disp_flt", "direct", "near_miss", "llm", "judge_cache", "judge_pred"]
 META_N_KEYS = [
     "pubs_req",
     "pubs_used",
@@ -217,13 +217,10 @@ META_FLAG_KEYS = [
     "veto_applied",
     "veto_disabled",
     "veto_disabled_when_proxy",
-    "judge_proxy",
     "llm_used",
     "llm_bypassed",
     "dense_clamped",
     "lex_clamped",
-    "ctx_clamped",
-    "prompt_clamped",
 ]
 STAGES = META_T_KEYS
 
@@ -862,7 +859,12 @@ def _cut(hs, k=K_SHOW, mnk=MNK, abs_min: float = ABS_MN):
 
 @lru_cache(maxsize=1)
 def _get_jdg():
-    # cached loader; model can be overridden by env
+    """Load the real cross-encoder judge if available.
+
+    The model path can be overridden via ``RAG_JUDGE_MODEL``. Failures are
+    tolerated to keep the system usable in CPU-only environments.
+    """
+
     model_name = os.environ.get("RAG_JUDGE_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
     try:
         return CrossEncoder(model_name)
@@ -871,8 +873,21 @@ def _get_jdg():
 
 
 _JDG_CACHE: Dict[Tuple[str, str], Tuple[float, float]] = {}
-_JDG_CACHE_MAX = HCFG.get("jdg_cache_size", 256)
-_JDG_CACHE_TTL = HCFG.get("jdg_cache_ttl", 600)
+_JDG_CACHE_MAX = 256
+_JDG_CACHE_TTL = 300.0  # seconds
+
+
+def _chunk_hash(h: Dict[str, Any]) -> str:
+    raw = h.get("chunk_hash")
+    if raw:
+        return str(raw)
+    txt = (h.get("text") or h.get("tx") or "")[:800]
+    payload = "|".join(
+        [str(h.get("cid") or ""), str(h.get("fp") or ""), str(h.get("cidx") or ""), hashlib.sha1(txt.encode("utf-8", "ignore")).hexdigest()]
+    )
+    digest = hashlib.sha1(payload.encode("utf-8", "ignore")).hexdigest()
+    h["chunk_hash"] = digest
+    return digest
 
 
 def _jdg_rerank(q, hs, mode: str = "proxy"):
@@ -902,18 +917,22 @@ def _jdg_rerank(q, hs, mode: str = "proxy"):
     t0 = time.time()
     sc = []
     cache_hits = 0
+    t_cache = 0.0
+    t_pred = 0.0
     try:
-        now = time.time()
-        for pr in pairs:
-            q_sig = hashlib.sha1(pr[0].encode("utf-8", "ignore")).hexdigest()
-            c_sig = hashlib.sha1(pr[1].encode("utf-8", "ignore")).hexdigest()
-            key = (q_sig, c_sig)
+        for h, pr in zip(tp, pairs):
+            t_loop = time.time()
+            now = time.time()
+            key = (pr[0], _chunk_hash(h))
             cached = _JDG_CACHE.get(key)
-            if cached and now - cached[1] <= _JDG_CACHE_TTL:
-                sc.append(cached[0])
+            if cached and now - cached[0] <= _JDG_CACHE_TTL:
+                sc.append(cached[1])
                 cache_hits += 1
+                t_cache += time.time() - t_loop
                 continue
+            t_pred0 = time.time()
             scr = float(j.predict([pr])[0])
+            t_pred += time.time() - t_pred0
             sc.append(scr)
             _JDG_CACHE[key] = (scr, time.time())
             if len(_JDG_CACHE) > _JDG_CACHE_MAX:
@@ -925,13 +944,13 @@ def _jdg_rerank(q, hs, mode: str = "proxy"):
             for k in expire_keys:
                 _JDG_CACHE.pop(k, None)
     except Exception:
-        return hs, {"ok": False, "t": time.time() - t0, "n": len(tp), "kind": "error"}
+        return hs, {"ok": False, "t": time.time() - t0, "n": len(tp), "kind": "error", "cache_hits": cache_hits, "cache_misses": len(tp) - cache_hits, "t_cache": t_cache, "t_pred": t_pred}
     t1 = time.time()
     for h, s in zip(tp, sc):
         h["_jdg"] = float(s)
         h["judge01"] = _sig(h["_jdg"])
     tp.sort(key=lambda x: float(x.get("_jdg", -1e9)), reverse=True)
-    return tp + hs[len(tp) :], {"ok": True, "t": t1 - t0, "n": len(tp), "kind": "cross_encoder", "cache_hits": cache_hits}
+    return tp + hs[len(tp) :], {"ok": True, "t": t1 - t0, "n": len(tp), "kind": "cross_encoder", "cache_hits": cache_hits, "cache_misses": len(tp) - cache_hits, "t_cache": t_cache, "t_pred": t_pred}
 
 
 def _disp_flt(hs, min_keep=MNK, jmin=J_DISP_MIN, use_jdg=USE_JDG_DEFAULT):
@@ -1174,10 +1193,11 @@ def get_reader_chunk(e: Eng, fp: str, cidx: int, window: int = 2):
 
 def _log_event(meta, mode, pubs, qlen):
     try:
-        _config_logger()
+        existing = dict(meta.get("log", {}) or {})
         payload = {
             "ts": time.time(),
             "mode": mode,
+            "judge_mode": existing.get("judge_mode"),
             "scope": pubs,
             "qlen": int(qlen or 0),
             "counts": dict(meta.get("n", {})),
@@ -1191,9 +1211,12 @@ def _log_event(meta, mode, pubs, qlen):
             "llm_dur": meta.get("t", {}).get("llm"),
             "clamp": dict(meta.get("clamp", {})),
         }
-        meta["log"] = payload
+        payload["judge_cache_hits"] = existing.get("judge_cache_hits", 0)
+        payload["judge_cache_misses"] = existing.get("judge_cache_misses", 0)
+        existing.update(payload)
+        meta["log"] = existing
         try:
-            logger.info(json.dumps(payload))
+            logger.info(json.dumps(existing))
         except Exception:
             pass
     except Exception:
@@ -1210,6 +1233,7 @@ def run_query(
     jmin: float | None = None,
     use_jdg: bool | None = None,
     jdg_mode: str | None = None,
+    judge_mode: str | None = None,
     scope=None,
     use_llm: bool | None = None,
     use_vector_mmr: bool | None = None,
@@ -1222,7 +1246,7 @@ def run_query(
     t_total = _t0()
     meta = _blank_meta()
     use_jdg_flag = USE_JDG_DEFAULT if use_jdg is None else bool(use_jdg)
-    jdg_mode = (jdg_mode or "proxy").lower()
+    jdg_mode = (judge_mode or jdg_mode or "proxy").lower()
     if not use_jdg_flag:
         jdg_mode = "off"
     nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
@@ -1245,6 +1269,7 @@ def run_query(
     meta["cap"]["judge_ok"] = False
     meta["cap"]["judge_kind"] = "none"
     meta["cap"]["corp_available"] = list(getattr(e, "corp", {}).keys())
+    meta.setdefault("log", {})["judge_mode"] = jdg_mode
 
     try:
         qs = set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
@@ -1344,16 +1369,29 @@ def run_query(
             meta["t"]["rerank"] = _dt(t_rerank)
             disp_use_jdg = bool(meta_jdg.get("ok"))
             meta["cap"]["judge_ok"] = disp_use_jdg
-            meta["cap"]["judge_kind"] = meta_jdg.get("kind", "none")
-            meta["flags"]["judge_proxy"] = meta_jdg.get("kind") != "cross_encoder"
-            meta["flags"]["veto_disabled_when_proxy"] = meta["flags"]["judge_proxy"]
-            meta["flags"]["veto_disabled"] = meta["flags"]["veto_disabled_when_proxy"]
+            meta["cap"]["judge_kind"] = meta_jdg.get("kind", jdg_mode)
+            meta["t"]["judge_cache"] = float(meta_jdg.get("t_cache", 0.0))
+            meta["t"]["judge_pred"] = float(meta_jdg.get("t_pred", meta_jdg.get("t", 0.0)))
+            meta.setdefault("log", {})["judge_cache_hits"] = int(meta_jdg.get("cache_hits", 0))
+            meta.setdefault("log", {})["judge_cache_misses"] = int(meta_jdg.get("cache_misses", max(0, meta_jdg.get("n", 0) - meta_jdg.get("cache_hits", 0))))
+            meta.setdefault("log", {})["judge_mode"] = jdg_mode
+            if meta_jdg.get("kind") != "cross_encoder":
+                meta["flags"]["veto_disabled"] = True
+                meta["flags"]["veto_disabled_when_proxy"] = True
+            if jdg_mode == "proxy":
+                meta["flags"]["veto_disabled_when_proxy"] = True
             veto = False
             if disp_use_jdg:
                 veto, _ = _noev_jdg(hs2)
                 meta["flags"]["veto_applied"] = bool(veto)
         else:
             meta["t"]["rerank"] = _dt(t_rerank)
+            meta["t"]["judge_cache"] = 0.0
+            meta["t"]["judge_pred"] = 0.0
+            meta.setdefault("log", {})["judge_mode"] = jdg_mode
+            meta["flags"]["veto_disabled"] = True
+            if jdg_mode == "proxy":
+                meta["flags"]["veto_disabled_when_proxy"] = True
 
         t_disp = _t0()
         hs3, _ = _disp_flt(
@@ -1368,10 +1406,8 @@ def run_query(
         meta["n"]["uniq_sections"] = len({(h.get("book"), h.get("sec")) for h in hs3 if h.get("book") or h.get("sec")})
 
         if not use_jdg_flag:
-            meta["cap"]["judge_kind"] = "none"
-            meta["flags"]["judge_proxy"] = False
-            meta["flags"]["veto_disabled_when_proxy"] = False
-            meta["flags"]["veto_disabled"] = False
+            meta["cap"]["judge_kind"] = jdg_mode or "off"
+            meta["cap"]["judge_ok"] = False
 
         # direct evidence
         t_direct = _t0()

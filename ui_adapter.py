@@ -475,7 +475,19 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
 def render_power_panel(rr: Dict[str, Any]):
     meta = (rr or {}).get("meta") or {}
     log = meta.get("log", {}) or {}
-    with st.expander("Power panel (debug)", expanded=False):
+    clamp = meta.get("clamp", {}) or {}
+    mode_cfg = meta.get("mode_cfg", {}) or {}
+    hits = list((rr or {}).get("hits") or [])
+    with st.expander("Power panel (debug)", expanded=True):
+        st.caption(f"Mode: {mode_cfg.get('label', meta.get('mode', 'quick')).title()} — {mode_cfg.get('description', '')}")
+        st.write(
+            {
+                "mode": meta.get("mode"),
+                "mode_cfg": {k: v for k, v in mode_cfg.items() if k not in {"description", "label"}},
+                "cut_rule": meta.get("cut_rule"),
+                "near_miss_threshold": meta.get("meta_nm", {}).get("threshold"),
+            }
+        )
         st.caption("Judge + cache stats")
         c1, c2 = st.columns(2)
         with c1:
@@ -496,7 +508,33 @@ def render_power_panel(rr: Dict[str, Any]):
                     "t_pred": meta.get("t", {}).get("judge_pred", 0.0),
                 }
             )
+        st.caption("Retrieval + clamp")
+        st.write(
+            {
+                "retrieval": clamp.get("retrieval"),
+                "context": clamp.get("context"),
+                "prompt": clamp.get("prompt"),
+            }
+        )
         st.caption("Timings (s)")
         st.json(meta.get("t", {}))
         st.caption("Flags")
         st.json(meta.get("flags", {}))
+        st.caption("Capabilities")
+        st.json(meta.get("cap", {}))
+        st.caption("Hits (sem/lex/judge01/cut_rule)")
+        rows = []
+        for h in hits:
+            rows.append(
+                {
+                    "id": _cid(h),
+                    "book": _pretty_title(h),
+                    "sec": _sec_lbl(h),
+                    "sem": float(h.get("sem_score_n", h.get("sem_score", 0.0) or 0.0)),
+                    "lex": float(h.get("lex_score_n", h.get("lex_score", 0.0) or 0.0)),
+                    "judge01": _j01(h),
+                    "cut_rule": meta.get("cut_rule"),
+                }
+            )
+        if rows:
+            st.dataframe(rows, hide_index=True, use_container_width=True)

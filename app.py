@@ -33,6 +33,7 @@ def _run(eng, q: str):
         show_nm=bool(ss.get("nm", True)),
         nm=not bool(ss.get("nm_skip", False)),
         jmin=float(ss.get("jmin", 0.45)),
+        mode=ss.get("mode", "quick"),
     )
     ss["res"] = rr
     ss["last_q"] = q
@@ -79,6 +80,10 @@ def main():
     us.toast_flush()
 
     st.title("RAG Books Search")
+    mode_cfg = re.get_mode_cfg(ss.get("mode", "quick"))
+    st.caption(
+        f"Mode: {mode_cfg.get('label', 'Quick')} — {mode_cfg.get('description', 'Speed vs depth')}"
+    )
     st.caption("evidence-first • judge ON • CPU-friendly")
 
     with st.form("q_form", clear_on_submit=False):

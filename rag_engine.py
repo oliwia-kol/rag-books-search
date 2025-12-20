@@ -1538,6 +1538,7 @@ def run_query(
         meta["n"]["after_disp"] = len(hs3)
         meta["n"]["uniq_books"] = len({h.get("book") for h in hs3 if h.get("book")})
         meta["n"]["uniq_sections"] = len({(h.get("book"), h.get("sec")) for h in hs3 if h.get("book") or h.get("sec")})
+        meta["n"]["uniq_publishers"] = len({h.get("publisher") or h.get("corp") for h in hs3 if h.get("publisher") or h.get("corp")})
 
         if not use_jdg_flag:
             meta["cap"]["judge_kind"] = jdg_mode or "off"
@@ -1550,6 +1551,8 @@ def run_query(
         meta["t"]["direct"] = _dt(t_direct)
         meta["n"]["direct_hits"] = len(dr)
         cov = coverage_label(dr, q)
+        meta["cov"] = _cov(dr if dr else hs3, topn=8)
+        meta["coverage"] = cov
 
         if dr:
             meta["t"]["near_miss"] = 0.0

@@ -519,7 +519,13 @@ def _normalize_query(qv: np.ndarray) -> np.ndarray:
 
 
 def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
-    meta = {"fallback_used": 0, "fallback_failed": 0, "clamped_k": False}
+    meta = {
+        "fallback_used": 0,
+        "fallback_failed": 0,
+        "fallback_retries": 0,
+        "clamped_k": False,
+        "k_requested": k,
+    }
     if qv.size == 0:
         return [], meta
     if corp not in e.ix or corp not in e.dbp:
@@ -605,7 +611,7 @@ def faiss_search(e: Eng, corp: str, qv: np.ndarray, k: int):
             if not row:
                 continue
             cid, fp, sec, cidx, tx, _ = row
-            tx = (tx or "")[: HCFG["max_snippet_chars"]]
+            tx = _cap_tx(tx)
             out.append(
                 {
                     "corp": corp,
@@ -775,9 +781,9 @@ def hybrid_retrieve(
         meta["fetched_dense"] += len(d)
         meta["fetched_lex"] += len(l)
         meta["pubs_used"] += 1
-        meta["dense_fallback"] += dmeta.get("fallback_used", 0)
-        meta["dense_fallback_fail"] += dmeta.get("fallback_failed", 0)
-        meta["dense_clamped"] = meta["dense_clamped"] or dmeta.get("clamped_k", False)
+        meta["dense_fallback"] += d_meta.get("fallback_used", 0)
+        meta["dense_fallback_fail"] += d_meta.get("fallback_failed", 0)
+        meta["dense_clamped"] = meta["dense_clamped"] or d_meta.get("clamped_k", False)
         meta["lex_clamped"] = meta["lex_clamped"] or lmeta.get("clamped_k", False)
 
         dd = {x["cid"]: x for x in d}

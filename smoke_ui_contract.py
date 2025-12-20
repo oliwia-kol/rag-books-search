@@ -101,7 +101,7 @@ def main():
         raise AssertionError("error path should annotate err.where=run_query")
 
     # no direct evidence path
-    def fake_retrieve(e, q, pubs=None, qv=None):
+    def fake_retrieve(e, q, pubs=None, qv=None, **kwargs):
         return [{"cid": "c", "fp": "f", "sec": "s", "tx": "t", "cidx": 0, "score": 0.5}], {"dense_hits": 0, "lex_hits": 1, "cands": 1, "pubs_used": 1, "t_dense": 0.0, "t_lex": 0.0}
 
     orig_retrieve = re_mod.hybrid_retrieve

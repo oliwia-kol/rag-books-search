@@ -70,6 +70,13 @@ def global_error_box():
             st.caption("If this persists, reload the page and retry the query. Error IDs help with debugging.")
 
 
+def format_ui_error(err_id: str | None, msg: str | None) -> str:
+    base = msg or "Unknown error"
+    if err_id:
+        return f"Error ({err_id}): {base}. Please retry the query."
+    return f"Error: {base}. Please retry the query."
+
+
 def cb_clear():
     ss = st.session_state
     ss["clip"] = ""

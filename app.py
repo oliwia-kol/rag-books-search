@@ -38,7 +38,7 @@ def _run(eng, q: str):
     ss["last_q"] = q
     if rr.get("meta", {}).get("err"):
         err = rr["meta"]["err"]
-        ss["_ui_err"] = f"Retrieval/LLM issue ({err.get('id')}). Try again. Details: {err.get('msg')}"
+        ss["_ui_err"] = us.format_ui_error(err.get("id"), err.get("msg"))
     else:
         ss["_ui_err"] = None
 
@@ -52,7 +52,7 @@ def _on_search():
         _run(ss["eng"], q)
         us.qp_set(q=q)
     except Exception as e:
-        ss["_ui_err"] = f"Search failed: {type(e).__name__}: {e}"
+        ss["_ui_err"] = us.format_ui_error(None, f"{type(e).__name__}: {e}")
 
 
 def main():

@@ -233,6 +233,7 @@ META_FLAG_KEYS = [
     "llm_bypassed",
     "dense_clamped",
     "lex_clamped",
+    "near_miss_skipped",
 ]
 STAGES = META_T_KEYS
 
@@ -1089,6 +1090,55 @@ def _near_miss(hs, q, qs=None, use_jdg=USE_JDG_DEFAULT):
     return c[:NM_MAX], {"threshold": NM_MIN, "used_judge": bool(use_jdg)}
 
 
+def _nm_with_metadata(hs, nm_meta, explanation: Optional[str] = None):
+    thr = nm_meta.get("threshold", NM_MIN) if isinstance(nm_meta, dict) else NM_MIN
+    used_judge = bool(nm_meta.get("used_judge")) if isinstance(nm_meta, dict) else False
+    out = []
+    for h in hs or []:
+        h2 = dict(h)
+        h2["near_miss_threshold"] = thr
+        h2["used_judge"] = used_judge
+        if explanation:
+            h2.setdefault("explanation", explanation)
+        out.append(h2)
+    return out
+
+
+def _ensure_nm_candidates(nm_hits, hs_pool, q, qs=None, nm_meta=None, min_k: int = 3, max_k: int = NM_MAX):
+    out = list(nm_hits or [])
+    seen = {(h.get("cid"), h.get("cidx"), h.get("fp")) for h in out}
+    qs = qs if qs is not None else set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
+    extras = []
+    for h in hs_pool or []:
+        key = (h.get("cid"), h.get("cidx"), h.get("fp"))
+        if key in seen:
+            continue
+        ok, ov_meta = _ov_ok(q, h, qs=qs)
+        if not ok:
+            continue
+        h2 = dict(h)
+        h2["overlap"] = ov_meta.get("overlap", 0)
+        extras.append(h2)
+    extras.sort(key=lambda x: (-float(x.get("overlap", 0)), -float(x.get("judge01") or x.get("score", 0.0))))
+    for h in extras:
+        if len(out) >= max_k:
+            break
+        out.append(h)
+        seen.add((h.get("cid"), h.get("cidx"), h.get("fp")))
+    if len(out) < min_k:
+        for h in hs_pool or []:
+            if len(out) >= max_k or len(out) >= min_k:
+                break
+            key = (h.get("cid"), h.get("cidx"), h.get("fp"))
+            if key in seen:
+                continue
+            h2 = dict(h)
+            h2.setdefault("overlap", 0)
+            out.append(h2)
+            seen.add(key)
+    return out[:max_k]
+
+
 def _strip_internal(hs):
     out = []
     for h in hs:
@@ -1301,6 +1351,7 @@ def run_query(
     sort: str = "Best evidence",
     nm: bool | None = None,
     show_nm: bool | None = None,
+    compute_near_miss: bool | None = None,
     jmin: float | None = None,
     use_jdg: bool | None = None,
     jdg_mode: str | None = None,
@@ -1323,7 +1374,8 @@ def run_query(
     if (not use_jdg_flag) or jdg_mode == "off":
         jdg_mode = "off"
         use_jdg_flag = False
-    nm_flag = nm if nm is not None else (show_nm if show_nm is not None else True)
+    compute_nm_flag = True if compute_near_miss is None else bool(compute_near_miss)
+    nm_flag = compute_nm_flag and (nm if nm is not None else (show_nm if show_nm is not None else True))
     mode = (mode or "quick").lower()
     budget_overrides = {
         "ctx_chars": ctx_char_budget,
@@ -1553,9 +1605,23 @@ def run_query(
             return _mk_ret(ok=True, no_ev=False, hits=_pub_hits(dr), nm_hits=[], cov=cov, ans=ans_txt, meta=meta)
 
         t_nm = _t0()
-        nm_hits, nm_meta = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg) if nm_flag else ([], {"threshold": NM_MIN, "used_judge": disp_use_jdg})
+        nm_hits = []
+        nm_meta = {"threshold": NM_MIN, "used_judge": disp_use_jdg}
+        if nm_flag:
+            nm_hits, nm_meta = _near_miss(hs2, q, qs=qs, use_jdg=disp_use_jdg)
+            nm_hits = _nm_with_metadata(nm_hits, nm_meta)
+            if not dr:
+                nm_hits = _ensure_nm_candidates(nm_hits, hs2, q, qs=qs, nm_meta=nm_meta)
+                nm_hits = _nm_with_metadata(nm_hits, nm_meta, explanation="Close but below judge/overlap threshold")
+        else:
+            if not compute_nm_flag:
+                nm_meta["reason"] = "compute_near_miss_disabled"
+                meta["flags"]["near_miss_skipped"] = True
+            else:
+                nm_meta["reason"] = "near_miss_disabled"
         meta["t"]["near_miss"] = _dt(t_nm)
         meta["n"]["near_miss"] = len(nm_hits)
+        nm_meta["count"] = len(nm_hits)
         meta["meta_nm"] = nm_meta
         meta["t"]["total"] = _dt(t_total)
         meta["conf"] = _calc_confidence(dr if dr else hs3)

@@ -32,3 +32,6 @@ def test_near_miss_returns_results_when_no_direct_hits(monkeypatch):
     assert res["no_evidence"] is True
     assert res["near_miss"]
     assert res["meta"].get("meta_nm", {}).get("threshold") is not None
+    first = res["near_miss"][0]
+    assert "near_miss_threshold" in first
+    assert "used_judge" in first

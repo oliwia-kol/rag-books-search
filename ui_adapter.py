@@ -323,6 +323,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     pub = _pub(h)
     sec = _sec_lbl(h)
     j = _j01(h)
+    ov = (h or {}).get("overlap")
 
     with st.container(border=True):
         st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
@@ -331,11 +332,14 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
         if meta:
             st.caption(meta)
 
-        # small quality line
-        st.caption(f"judge01 {j:.2f} | score {_score(h):.2f}")
-
+        score_line = f"judge01 {j:.2f} | score {_score(h):.2f}"
         if near_miss:
-            st.caption("Near-miss candidate (no direct evidence).")
+            ov_txt = f"overlap {int(ov) if ov is not None else 0}"
+            st.caption(f"{ov_txt} | {score_line}")
+            st.caption((h or {}).get("explanation") or "Near-miss candidate (no direct evidence).")
+        else:
+            # small quality line
+            st.caption(score_line)
         st.markdown(_snippet(h, q=q, mx=260))
 
         b1, b2, b3 = st.columns(3)
@@ -370,6 +374,10 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
                 st.write(f"overlap: {ov}")
             st.write(f"judge01: {j:.3f}")
             st.write(f"score: {_score(h):.3f}")
+            if near_miss:
+                if (h or {}).get("near_miss_threshold") is not None:
+                    st.write(f"near_miss_threshold: {float((h or {}).get('near_miss_threshold')):.2f}")
+                st.write(f"used_judge: {bool((h or {}).get('used_judge'))}")
 
 
 def render_near_miss(rr: Dict[str, Any], q: str = ""):
@@ -379,13 +387,19 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
     if not nm:
         return
     nm = nm[:6]
-    st.subheader("Near-miss evidence (no direct hit)")
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
-    st.caption(
-        f"Showing {len(nm)} candidates • threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
-    )
-    for i, h in enumerate(nm):
-        render_card(h, q, i, near_miss=True)
+    reason = meta_nm.get("reason") or "Close but below judge/overlap threshold."
+    header = f"Near misses ({len(nm)})"
+    with st.expander(header, expanded=False):
+        st.subheader("Near misses (no direct hit)")
+        st.info(
+            f"{reason} Threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
+        )
+        st.caption(
+            f"Showing {len(nm)} candidates • overlap/threshold metadata included on each card."
+        )
+        for i, h in enumerate(nm):
+            render_card(h, q, i, near_miss=True)
 
 
 def render_power_panel(rr: Dict[str, Any]):

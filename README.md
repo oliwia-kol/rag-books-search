@@ -76,8 +76,11 @@ http://localhost:8501
 
 ## Testy i walidacja
 
-- Szybki smoke: `python smoke_ui_contract.py`
+- Kompilacja kontraktu modułów: `python -m py_compile app.py rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py`
+- Szybki smoke/contract: `python smoke_ui_contract.py`
 - Walidacja jakości retrieval: `pytest tests/validation/test_retrieval_quality.py`
-- Pakiet testów jednostkowych: `pytest tests`
+- Walidacja bezpieczeństwa retrieval: `pytest tests/validation/test_retrieval_safety.py`
+- Pakiet smoke + walidacje (JUnit + opcjonalne testy slow): `pytest tests/validation tests/smoke --maxfail=1 --junitxml=reports/pytest-junit.xml`
+  - Użyj `-m "not slow"` jeżeli dane `data/` są niedostępne i chcesz pominąć kontrolę latencji.
 
-CI uruchamia smoke + walidację na gałęzi głównej.
+CI (`.github/workflows/ci.yml`) uruchamia kompilację modułów oraz `pytest tests/validation tests/smoke` na każdej gałęzi.

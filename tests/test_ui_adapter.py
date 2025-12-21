@@ -4,6 +4,7 @@ import re
 import streamlit as st
 
 import app
+import rag_engine as re
 import ui_adapter as ua
 import ui_shell as us
 
@@ -65,6 +66,7 @@ def test_jmin_default_matches_backend_and_display(monkeypatch):
     assert st.session_state["jmin"] == us.JMIN_DEFAULT
     assert captured["jmin"] == us.JMIN_DEFAULT
     assert ua.JMIN_DEFAULT == us.JMIN_DEFAULT
+    assert re.J_DISP_MIN == us.JMIN_DEFAULT
     st.session_state.clear()
 
 

@@ -1,7 +1,7 @@
 import html
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -270,105 +270,133 @@ def _rank_key(h: Dict[str, Any]) -> float:
     return _j01(h)
 
 
+def _badge(cls: str, text: str) -> str:
+    return f"<span class='chip {cls}'>{html.escape(text)}</span>"
+
+
+def render_status_strip(rr: Dict[str, Any]):
+    meta = (rr or {}).get("meta", {})
+    hits = (rr or {}).get("hits", [])
+    pubs_used = meta.get("n", {}).get("uniq_publishers") or len({h.get("publisher") or h.get("corp") for h in hits})
+    count = len(hits)
+    coverage = (rr or {}).get("coverage") or "WEAK"
+    confidence = float((rr or {}).get("confidence") or 0.0)
+    cov_state = _confidence_state(confidence, coverage, meta.get("cov"))
+    badge_cls = {
+        "HIGH": "success",
+        "DISTRIBUTED": "primary",
+        "OK": "primary",
+        "WEAK": "warning",
+    }.get(str(coverage).upper(), "neutral")
+
+    evidence_state = "No indexes available" if meta.get("cap", {}).get("corp_available") is False else (
+        "Direct evidence found" if not (rr or {}).get("no_evidence") else "Weak evidence, showing closest matches"
+    )
+    meta_line = f"Hits: {count} | Pubs: {pubs_used or 0} | {int(meta.get('t', {}).get('total', 0)*1000)} ms"
+    st.markdown(
+        """
+<div class="status-strip">
+  <div><span class="status-chip {cls}" title="{tooltip}">{cov}</span></div>
+  <div style="color: var(--text); font-size: 0.96rem;">{state}</div>
+  <div class="status-meta">{meta_line}</div>
+</div>
+""".format(
+            cls=badge_cls,
+            tooltip=html.escape(cov_state["tooltip"]),
+            cov=coverage,
+            state=html.escape(evidence_state),
+            meta_line=html.escape(meta_line),
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def render_answer(rr: Dict[str, Any]):
     ans = (rr or {}).get("answer") or ""
-    with st.container(border=True):
-        st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
-        st.subheader("Answer")
-        if ans:
-            limited = _limit_answer_sentences(ans, max_sents=5)
-            st.write(limited["text"])
-            if limited["truncated"]:
-                st.caption("Clamped to 5 sentences (truncated).")
-        else:
-            hits = (rr or {}).get("hits") or []
-            if hits:
-                st.caption("No LLM answer. Evidence-first preview (stitched):")
-                st.markdown(_stitch_hits_preview(hits, q=""), unsafe_allow_html=True)
-            else:
-                st.caption("No answer.")
-
-
-def render_conf(rr: Dict[str, Any]):
-    cf = (rr or {}).get("confidence")
-    if cf is None:
+    if (rr or {}).get("no_evidence"):
+        st.markdown(
+            """
+<div class="panel">
+  <div class="section-title">Answer</div>
+  <p style="margin:0; color: var(--muted);">Abstain — no direct evidence to answer confidently.</p>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
         return
-    try:
-        v = float(cf)
-    except Exception:
+    if not ans:
         return
-    v = max(0.0, min(1.0, v))
-    cov = (rr or {}).get("coverage") or "WEAK"
-    meta = (rr or {}).get("meta") or {}
-    cov_state = _confidence_state(confidence=v, coverage=cov, cov_meta=meta.get("cov"))
-    counts = _coverage_counts(meta, rr.get("hits") or [])
-    st.caption("Confidence")
-    c1, c2 = st.columns([0.65, 0.35])
-    with c1:
-        badge = f'<span class="conf-badge conf-{cov_state["state"].lower()}" title="{html.escape(cov_state["tooltip"])}">{cov_state["state"]}</span>'
-        try:
-            st.progress(v, text=f"{cov_state['state'].title()} • coverage {cov}")
-        except Exception:
-            st.progress(v)
-            st.caption(f"{cov_state['state'].title()} • coverage {cov}")
-        st.markdown(badge, unsafe_allow_html=True)
-        badges = [
-            f'<span class="ui-badge ui-badge-soft">{cov_state["state"].title()} conf</span>',
-            f'<span class="ui-badge ui-badge-muted">{cov} coverage</span>',
-        ]
-        meta_flags = meta.get("flags", {})
-        judge_mode = (meta.get("log", {}) or {}).get("judge_mode") or (meta.get("cap", {}) or {}).get("judge_kind")
-        proxy_lbl = "proxy" if meta_flags.get("judge_proxy") or judge_mode == "proxy" else judge_mode
-        badges.append(f'<span class="ui-badge ui-badge-strong">Judge: {proxy_lbl or "unknown"}</span>')
-        if counts["single_source"]:
-            badges.append('<span class="ui-badge ui-badge-warn">Single source</span>')
-        st.markdown(f"<div class='badge-row'>{''.join(badges)}</div>", unsafe_allow_html=True)
-    with c2:
-        st.caption(f"Books: {counts['books']} | Sections: {counts['sections']} | Publishers: {counts['publishers']}")
-        if counts["single_source"]:
-            st.warning("Single-source evidence. Verify carefully.", icon="⚠️")
-    veto_disabled = meta_flags.get("veto_disabled") or meta_flags.get("veto_disabled_when_proxy")
-    veto_state = "applied" if meta_flags.get("veto_applied") else ("disabled" if veto_disabled else "ready")
-    proxy_lbl = "proxy" if meta_flags.get("judge_proxy") or judge_mode == "proxy" else judge_mode
-    st.caption(f"Judge mode: {proxy_lbl or 'unknown'} • veto {veto_state}")
-    if meta_flags.get("veto_disabled_when_proxy"):
-        st.caption("Veto is disabled when proxy/off paths are active.")
+
+    limited = _limit_answer_sentences(ans, max_sents=5)
+    hits = (rr or {}).get("hits") or []
+    citations = ""
+    if hits:
+        refs = "".join([_badge("primary", f"[{i+1}]") for i, _ in enumerate(hits[:4])])
+        citations = f"<div class='chips'>{refs}<span class='chip muted'>Citations</span></div>"
+    st.markdown(
+        """
+<div class="panel">
+  <div class="section-title">Answer</div>
+  <div style="line-height:1.55; font-size:1rem; color: var(--text);">{text}</div>
+  {foot}{citations}
+</div>
+""".format(
+            text=html.escape(limited["text"]),
+            foot="<div class='chips'><span class='chip muted'>Clamped to 5 sentences</span></div>" if limited["truncated"] else "",
+            citations=citations,
+        ),
+        unsafe_allow_html=True,
+    )
 
 
 def render_context_panel():
     ss = st.session_state
     h = ss.get("act_hit")
-    with st.container(border=True):
-        st.markdown('<div id="ctx_panel" class="rag-card-top"></div>', unsafe_allow_html=True)
-        c1, c2 = st.columns([0.78, 0.22])
-        with c1:
-            st.subheader("Context")
-        with c2:
-            st.button("×", key="ctx_close", on_click=_ctx_close, help="Close")
-
+    with st.container():
+        st.markdown('<div id="ctx_panel"></div>', unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>Details</div>", unsafe_allow_html=True)
         if not h:
-            st.caption("Use Expand on an evidence card to inspect context here.")
+            st.markdown("<div class='empty-state'>Select an evidence card to view full context.</div>", unsafe_allow_html=True)
         else:
             tt = _pretty_title(h)
             sec = _sec_lbl(h)
-            st.write(f"{tt}" + (f" | {sec}" if sec else ""))
-            st.caption("Evidence window (highlighted). Full reader: Stage 3.")
-            st.write(_ws((h or {}).get("ctx") or (h or {}).get("text") or ""))
+            st.markdown(f"<div class='chips'>{_badge('primary', tt)}{_badge('muted', sec) if sec else ''}</div>", unsafe_allow_html=True)
+            st.button("Clear selection", key="ctx_close", on_click=_ctx_close, help="Close details")
+            st.caption("Excerpt")
+            st.markdown(
+                """
+<div class="details-panel">
+  <pre style="white-space:pre-wrap; line-height:1.6;">{tx}</pre>
+</div>
+""".format(tx=html.escape(_ws((h or {}).get("ctx") or (h or {}).get("text") or ""))),
+                unsafe_allow_html=True,
+            )
+            st.caption("Metadata")
+            st.markdown(
+                """
+<div class="chips">
+  {chips}
+</div>
+""".format(
+                    chips="".join(
+                        [
+                            _badge("muted", f"cid { _cid(h)}"),
+                            _badge("muted", f"cidx { _cidx(h)}"),
+                            _badge("muted", f"corp { _pub(h) or 'n/a'}"),
+                        ]
+                    )
+                ),
+                unsafe_allow_html=True,
+            )
 
     if ss.get("_scroll_ctx"):
         ss["_scroll_ctx"] = False
-        # smooth scroll + flash
         components.html(
             """
 <script>
 const el = window.parent.document.getElementById('ctx_panel');
 if (el){
   el.scrollIntoView({behavior:'smooth', block:'start'});
-  const c = el.closest('[data-testid="stContainer"]');
-  if (c){
-    c.classList.add('ctx-flash');
-    setTimeout(()=>c.classList.remove('ctx-flash'), 900);
-  }
 }
 </script>
 """,
@@ -380,21 +408,25 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
     ss = st.session_state
     hs = list((rr or {}).get("hits") or [])
     if not hs:
+        st.markdown("<div class='empty-state'>No evidence yet. Run a search to see citations.</div>", unsafe_allow_html=True)
         return
 
-    # sort by judge01 always
     hs.sort(key=_rank_key, reverse=True)
-
-    # display filter by min judge01 (keep some results)
     jmn = float(ss.get("jmin", 0.35))
-    mk = 5
+    mk = 8
     out: List[Dict[str, Any]] = [h for h in hs if _j01(h) >= jmn]
     if len(out) < mk:
         out = hs[:mk]
 
-    st.subheader("Evidence")
+    st.markdown("<div class='section-title'>Evidence</div>", unsafe_allow_html=True)
     for i, h in enumerate(out):
         render_card(h, q, i)
+
+
+def _is_selected(h: Dict[str, Any]) -> bool:
+    ss = st.session_state
+    active = ss.get("act_hit") or {}
+    return _cid(active) == _cid(h) and _cidx(active) == _cidx(h)
 
 
 def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
@@ -404,97 +436,107 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     j = _j01(h)
     ov = (h or {}).get("overlap")
 
-    with st.container(border=True):
-        st.markdown('<div class="rag-card-top"></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="rag-title">{html.escape(tt)}</div>', unsafe_allow_html=True)
-        meta = " | ".join([x for x in [pub, sec] if x])
-        if meta:
-            st.markdown(f'<div class="rag-meta">{html.escape(meta)}</div>', unsafe_allow_html=True)
+    classes = ["evidence-card"]
+    if near_miss:
+        classes.append("near")
+    if _is_selected(h):
+        classes.append("selected")
 
-        pills = [
-            f'<span class="ui-badge ui-badge-soft">#{i+1}</span>',
-            f'<span class="ui-badge ui-badge-soft">judge {j:.2f}</span>',
-        ]
-        if near_miss:
-            pills.append('<span class="ui-badge ui-badge-warn">Near miss</span>')
-        st.markdown(f"<div class='badge-row'>{''.join(pills)}</div>", unsafe_allow_html=True)
+    score_chips = [
+        _badge("muted", f"#{i+1}"),
+        _badge("primary", f"J: {j:.2f}"),
+        _badge("muted", f"S: {_score(h):.2f}"),
+    ]
+    if near_miss:
+        score_chips.append(_badge("secondary", "Near-miss"))
 
-        score_line = f"judge01 {j:.2f} | score {_score(h):.2f}"
-        if near_miss:
-            ov_txt = f"overlap {int(ov) if ov is not None else 0}"
-            st.caption(f"{ov_txt} | {score_line}")
-            st.caption((h or {}).get("explanation") or "Near-miss candidate (no direct evidence).")
-        else:
-            # small quality line
-            st.caption(score_line)
-        st.markdown(_snippet(h, q=q, mx=260), unsafe_allow_html=True)
+    st.markdown(
+        """
+<div class="{cls}">
+  <div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">
+    <div>
+      <div class="evidence-title">{title}</div>
+      <div class="evidence-meta">{meta}</div>
+    </div>
+    <div class="score-row">{chips}</div>
+  </div>
+  <div class="evidence-snippet">{snippet}</div>
+  <div style="margin-top:8px; color: var(--muted-2); font-size:0.9rem;">{detail}</div>
+</div>
+""".format(
+            cls=" ".join(classes),
+            title=html.escape(tt),
+            meta=html.escape(" • ".join([x for x in [pub, sec] if x])),
+            chips="".join(score_chips),
+            snippet=_snippet(h, q=q, mx=260),
+            detail=html.escape(
+                (f"overlap {int(ov)} | " if near_miss and ov is not None else "")
+                + f"judge01 {j:.2f} • score {_score(h):.2f}"
+            ),
+        ),
+        unsafe_allow_html=True,
+    )
 
-        b1, b2, b3 = st.columns(3)
-        with b1:
-            st.button(
-                "📌 Pin",
-                key=f"pin_{_cid(h)}_{_cidx(h)}_{i}",
-                use_container_width=True,
-                on_click=_pin_add,
-                args=(h,),
-                help="Pin this evidence to the sidebar",
-            )
-        with b2:
-            st.button(
-                "📄 Copy",
-                key=f"copy_{_cid(h)}_{_cidx(h)}_{i}",
-                use_container_width=True,
-                on_click=_clip_set,
-                args=(h,),
-                help="Copy citation to clipboard",
-            )
-        with b3:
-            st.button(
-                "↗ Expand",
-                key=f"exp_{_cid(h)}_{_cidx(h)}_{i}",
-                use_container_width=True,
-                on_click=_ctx_open,
-                args=(h,),
-                help="Open the context panel",
-            )
-
-        with st.expander("Why this card?"):
-            ov = (h or {}).get("overlap")
-            if ov is not None:
-                st.write(f"overlap: {ov}")
-            st.write(f"judge01: {j:.3f}")
-            st.write(f"score: {_score(h):.3f}")
-            if near_miss:
-                if (h or {}).get("near_miss_threshold") is not None:
-                    st.write(f"near_miss_threshold: {float((h or {}).get('near_miss_threshold')):.2f}")
-                st.write(f"used_judge: {bool((h or {}).get('used_judge'))}")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        st.button(
+            "Pin",
+            key=f"pin_{_cid(h)}_{_cidx(h)}_{i}",
+            use_container_width=True,
+            on_click=_pin_add,
+            args=(h,),
+            help="Pin this evidence to the sidebar",
+        )
+    with b2:
+        st.button(
+            "Copy snippet",
+            key=f"copy_{_cid(h)}_{_cidx(h)}_{i}",
+            use_container_width=True,
+            on_click=_clip_set,
+            args=(h,),
+            help="Copy citation to clipboard",
+        )
+    with b3:
+        st.button(
+            "Open details",
+            key=f"exp_{_cid(h)}_{_cidx(h)}_{i}",
+            use_container_width=True,
+            on_click=_ctx_open,
+            args=(h,),
+            help="Open the context panel",
+        )
 
 
 def render_near_miss(rr: Dict[str, Any], q: str = ""):
     if not (rr or {}).get("no_evidence"):
         return
+    if not st.session_state.get("nm", True):
+        return
     nm = list((rr or {}).get("near_miss") or [])
     if not nm:
         return
-    nm = nm[:6]
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
     reason = meta_nm.get("reason") or "Close but below judge/overlap threshold."
-    header = f"Near misses ({len(nm)})"
-    with st.expander(header, expanded=False):
-        st.subheader("Near misses (no direct hit)")
-        st.markdown(
-            "<div class='badge-row'><span class='ui-badge ui-badge-warn'>Below threshold</span>"
-            "<span class='ui-badge ui-badge-soft'>Check when coverage is weak</span></div>",
-            unsafe_allow_html=True,
-        )
-        st.info(
-            f"{reason} Threshold {meta_nm.get('threshold', 0):.2f} • judge_used={meta_nm.get('used_judge', False)}"
-        )
-        st.caption(
-            f"Showing {len(nm)} candidates • overlap/threshold metadata included on each card."
-        )
-        for i, h in enumerate(nm):
-            render_card(h, q, i, near_miss=True)
+    st.markdown(
+        """
+<div class="panel" style="margin-top:8px;">
+  <div class="section-title">Near-miss (weak overlap)</div>
+  <div style="color: var(--muted); margin-bottom:6px;">These overlap with the query but didn’t meet the evidence threshold.</div>
+  <div class="chips">{chips}</div>
+</div>
+""".format(
+            chips="".join(
+                [
+                    _badge("secondary", f"{len(nm)} shown"),
+                    _badge("muted", f"Threshold {meta_nm.get('threshold', 0):.2f}"),
+                    _badge("muted", f"Reason: {reason}"),
+                ]
+            )
+        ),
+        unsafe_allow_html=True,
+    )
+    for i, h in enumerate(nm[:6]):
+        render_card(h, q, i, near_miss=True)
 
 
 def render_power_panel(rr: Dict[str, Any]):
@@ -503,12 +545,8 @@ def render_power_panel(rr: Dict[str, Any]):
     clamp = meta.get("clamp", {}) or {}
     mode_cfg = meta.get("mode_cfg", {}) or {}
     hits = list((rr or {}).get("hits") or [])
-    with st.expander("Power panel (debug)", expanded=True):
-        st.markdown(
-            "<div class='badge-row'><span class='ui-badge ui-badge-strong'>Power panel</span>"
-            "<span class='ui-badge ui-badge-soft'>Debug & timing</span></div>",
-            unsafe_allow_html=True,
-        )
+    with st.expander("Debug", expanded=False):
+        st.markdown("<div class='debug-block'>", unsafe_allow_html=True)
         st.caption(f"Mode: {mode_cfg.get('label', meta.get('mode', 'quick')).title()} — {mode_cfg.get('description', '')}")
         st.write(
             {
@@ -568,3 +606,9 @@ def render_power_panel(rr: Dict[str, Any]):
             )
         if rows:
             st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_conf(rr: Dict[str, Any]):
+    # Backwards compatibility: render the status strip in place of old confidence block.
+    render_status_strip(rr)

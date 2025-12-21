@@ -1,6 +1,8 @@
-streamlit
-numpy
-pandas
-faiss-cpu
-sentence-transformers
-pytest
+--extra-index-url https://download.pytorch.org/whl/cpu
+# Pin core packages to keep installs predictable and CPU-only.
+streamlit==1.35.0
+numpy==1.26.4
+faiss-cpu==1.7.4
+sentence-transformers==2.5.1
+torch==2.2.2
+pytest==7.4.4

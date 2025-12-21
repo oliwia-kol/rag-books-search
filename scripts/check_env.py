@@ -22,9 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_MODULES = [
     "streamlit",
     "numpy",
-    "pandas",
     "faiss",
     "sentence_transformers",
+    "torch",
 ]
 
 DATA_LAYOUT = {

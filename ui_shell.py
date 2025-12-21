@@ -276,11 +276,16 @@ def sidebar(eng=None, startup_report=None, mount=None):
                 if st.button(sug, key=f"q_suggestion_{i}", use_container_width=True):
                     _apply_query_prefill(sug)
 
-        if ss.get("q_history"):
+        if ss.get("q_history") or re.get_recent_queries():
             st.caption("Recent searches")
             hist = ss.get("q_history", [])
-            cols = st.columns(min(len(hist), 3))
-            for i, val in enumerate(hist[:3]):
+            persisted = re.get_recent_queries(limit=5)
+            merged = []
+            for val in hist + [v for v in persisted if v not in hist]:
+                if val not in merged:
+                    merged.append(val)
+            cols = st.columns(min(len(merged), 3) or 1)
+            for i, val in enumerate(merged[:3]):
                 with cols[i % len(cols)]:
                     if st.button(val, key=f"q_history_{i}", use_container_width=True):
                         _apply_query_prefill(val)

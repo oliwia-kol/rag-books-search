@@ -48,6 +48,7 @@ def test_error_id_logged_when_no_corpus(monkeypatch):
     res = re.run_query(eng, "query", pubs=None, use_llm=False)
     err_id = res["meta"].get("err", {}).get("id")
     assert err_id
+    assert res["meta"].get("err", {}).get("error_id") == err_id
     assert res["meta"].get("log", {}).get("error_id") == err_id
 
 
@@ -57,4 +58,14 @@ def test_error_id_logged_when_requested_corpus_missing(monkeypatch):
     err = res["meta"].get("err", {})
     assert err.get("id")
     assert err.get("missing") == ["missing"]
+    assert err.get("error_id") == err.get("id")
+    assert res["meta"].get("log", {}).get("error_id") == err.get("id")
+
+
+def test_error_id_logged_when_query_empty():
+    eng = re.Eng(emb=None, ix={}, dbp={}, corp={}, ix_dim={}, corp_report={})
+    res = re.run_query(eng, "", pubs=None, use_llm=False)
+    err = res["meta"].get("err", {})
+    assert err.get("id")
+    assert err.get("error_id") == err.get("id")
     assert res["meta"].get("log", {}).get("error_id") == err.get("id")

@@ -10,7 +10,6 @@ cd rag-books-search
 python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
 pip install -r requirements.txt
 streamlit run app.py
 ```
@@ -45,3 +44,13 @@ Only the index artifacts are needed; source PDFs/EPUBs are not required.
 - Contract smoke for UI + engine modules: `python smoke_ui_contract.py`
 - Compile entrypoints: `python -m py_compile app.py rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py`
 - Full test suite: `pytest`
+
+## Keep CPU usage in check
+
+If your local CPU is pegged when running the app, cap the BLAS thread count before launching Streamlit:
+
+```bash
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+streamlit run app.py
+```

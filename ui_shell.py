@@ -159,13 +159,13 @@ def sidebar(eng=None, startup_report=None):
 
         if eng is not None:
             rep = re.get_startup_report(eng)
-            ok = rep.get("ok", [])
-            fail = rep.get("fail", [])
+            ok = rep.get("ok", []) if isinstance(rep, dict) else []
+            fail = rep.get("fail", []) if isinstance(rep, dict) else []
             st.caption(f"Startup: loaded {len(ok)} / {len(ok)+len(fail)} corpora")
             if fail:
                 with st.expander("Corpus status", expanded=False):
                     for k, v in rep.get("by_corpus", {}).items():
-                        emoji = "✅" if v.get("ok") else "⚠️"
+                        emoji = "✅" if v.get("ready") or v.get("ok") else "⚠️"
                         reasons = ", ".join(v.get("reasons", []))
                         st.write(f"{emoji} {k}: dense_loaded={v.get('dense_loaded')} db_loaded={v.get('db_loaded')} dim_ok={v.get('dim_ok')} {reasons}")
 
@@ -238,10 +238,12 @@ def sidebar(eng=None, startup_report=None):
         st.divider()
 
         st.subheader("Startup status")
-        if not startup_report:
+        summary = startup_report or {}
+        rows = summary.get("rows", []) if isinstance(summary, dict) else summary
+        if not rows:
             st.caption("No corpus status available.")
         else:
-            for row in startup_report:
+            for row in rows:
                 ready = bool(row.get("ready"))
                 color = "#2aa865" if ready else "#d23030"
                 reason = "Ready" if ready else (row.get("reason") or "Unavailable")

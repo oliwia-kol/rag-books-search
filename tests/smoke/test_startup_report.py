@@ -17,8 +17,8 @@ def test_startup_report_missing_corpus_has_reason():
         }
     }
     eng = Eng(emb=None, ix={}, dbp={}, corp={}, ix_dim={}, corp_report=corp_report)
-    rows = get_startup_report(eng)
-
+    summary = get_startup_report(eng)
+    rows = summary.get("rows")
     assert rows, "startup report should contain entries"
     first = rows[0]
     for key in ["publisher", "loaded_dense", "loaded_db", "ready", "reason"]:

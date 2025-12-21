@@ -462,37 +462,30 @@ def _mk_eng(base_out: Path = BASE_OUT, emb_model: str = "sentence-transformers/a
             elif failure_reason is None and not rep.get("db_loaded"):
                 failure_reason = "metadata db unavailable"
             rep["failure_reason"] = failure_reason
+        rep["ready"] = ready_condition
+        rep["ok"] = ready_condition
+        reasons = list(rep.get("reasons", []))
+        if failure_reason and failure_reason not in reasons:
+            reasons.append(failure_reason)
+        rep["reasons"] = reasons
 
+        status[k] = {
+            "publisher": k,
+            "ready": ready_condition,
+            "ok": ready_condition,
+            "loaded": bool(rep.get("dense_loaded") and rep.get("db_loaded") and rep.get("dim_ok")),
+            "exists": bool(rep.get("exists")),
+            "manifest": bool(rep.get("manifest")),
+            "dense_loaded": bool(rep.get("dense_loaded")),
+            "db_loaded": bool(rep.get("db_loaded")),
+            "dim_ok": bool(rep.get("dim_ok")),
+            "missing": list(rep.get("missing", [])),
+            "reasons": reasons,
+            "failure_reason": rep.get("failure_reason"),
+        }
         reports[k] = rep
 
     return Eng(emb=emb, ix=ix, dbp=dbp, corp=loaded, ix_dim=dims, corp_report=reports, corp_status=status)
-
-
-def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
-    rows = []
-    for pub in CORP.keys():
-        rep = eng.corp_report.get(pub, {})
-        ready = all(
-            [
-                rep.get("exists"),
-                rep.get("faiss"),
-                rep.get("db"),
-                rep.get("manifest"),
-                rep.get("dense_loaded"),
-                rep.get("db_loaded"),
-                rep.get("dim_ok"),
-            ]
-        )
-        rows.append(
-            {
-                "publisher": pub,
-                "loaded_dense": bool(rep.get("dense_loaded")),
-                "loaded_db": bool(rep.get("db_loaded")),
-                "ready": bool(ready),
-                "reason": "" if ready else (rep.get("failure_reason") or "unavailable"),
-            }
-        )
-    return rows
 
 
 def _db(con_p: Path) -> sqlite3.Connection:
@@ -898,9 +891,12 @@ def _blank_meta():
     }
 
 
-def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
-    rows = []
+def get_startup_report(eng: Eng) -> Dict[str, Any]:
     rep = getattr(eng, "corp_report", {}) or {}
+    rows = []
+    ok = []
+    fail = []
+    by_corpus = {}
     for pub in CORP.keys():
         r = rep.get(pub, {})
         ready = all(
@@ -914,16 +910,28 @@ def get_startup_report(eng: Eng) -> List[Dict[str, Any]]:
                 r.get("dim_ok"),
             ]
         )
-        rows.append(
-            {
-                "publisher": pub,
-                "loaded_dense": bool(r.get("dense_loaded")),
-                "loaded_db": bool(r.get("db_loaded")),
-                "ready": bool(ready),
-                "reason": "" if ready else (r.get("failure_reason") or "unavailable"),
-            }
-        )
-    return rows
+        reason = "" if ready else (r.get("failure_reason") or "unavailable")
+        row = {
+            "publisher": pub,
+            "ok": ready,
+            "loaded": bool(r.get("dense_loaded") and r.get("db_loaded") and r.get("dim_ok")),
+            "loaded_dense": bool(r.get("dense_loaded")),
+            "loaded_db": bool(r.get("db_loaded")),
+            "ready": bool(ready),
+            "reason": reason,
+            "exists": bool(r.get("exists")),
+            "manifest": bool(r.get("manifest")),
+            "dim_ok": bool(r.get("dim_ok")),
+            "missing": list(r.get("missing", [])),
+            "reasons": list(r.get("reasons", [])),
+        }
+        rows.append(row)
+        by_corpus[pub] = row
+        if ready:
+            ok.append(pub)
+        else:
+            fail.append(pub)
+    return {"rows": rows, "ok": ok, "fail": fail, "by_corpus": by_corpus}
 
 
 def _mk_ret(ok: bool = False, no_ev: bool = True, hits=None, nm_hits=None, cov: str = "WEAK", ans: str = "", meta=None):

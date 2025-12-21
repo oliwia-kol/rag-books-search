@@ -44,6 +44,7 @@ def init_state():
     ss.setdefault("clip", "")
     ss.setdefault("act_hit", None)      # active hit for context panel
     ss.setdefault("q_history", [])
+    ss.setdefault("_loading", False)
 
     ss.setdefault("_toast", None)
     ss.setdefault("_toast_last", None)
@@ -259,12 +260,7 @@ def sidebar(eng=None, startup_report=None, mount=None):
                     label_visibility="collapsed",
                     help="Press Enter or click Search to submit. Press / or Ctrl+K to focus.",
                 )
-            submitted = st.form_submit_button(
-                "Search",
-                use_container_width=True,
-                type="primary",
-                help="Submit the search (Enter works too).",
-            )
+            submitted = st.form_submit_button("Search", use_container_width=True)
 
         st.caption("Suggestions")
         suggestions = [

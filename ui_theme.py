@@ -29,6 +29,7 @@ def _apply_mode_flag(mode: str | None):
 try {{
   const root = window.parent.document.documentElement;
   const mode = '{resolved}';
+  root.setAttribute('data-theme', '{resolved}');
   if (root.getAttribute('data-theme') !== mode) {{
     root.setAttribute('data-theme', mode);
   }}
@@ -281,24 +282,52 @@ html, body {
 .chip.secondary { border-color: rgba(217,122,36,0.28); color: var(--secondary); background: var(--secondary-soft); }
 .chip.muted { color: var(--muted-2); }
 
-.evidence-card {
+.card-shell {
   border: 1px solid var(--border);
   border-radius: var(--radius-card);
-  padding: 0.85rem 0.95rem;
+  padding: 0.75rem 0.85rem;
   background: var(--surface);
   transition: border-color 0.15s ease, transform 0.12s ease, box-shadow 0.18s ease;
   box-shadow: var(--shadow-none);
+  position: relative;
+  overflow: hidden;
 }
-.evidence-card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-subtle); }
-.evidence-card.selected { border-left: 3px solid var(--accent); background: var(--accent-soft); }
-.evidence-card.near { border-left: 3px solid var(--secondary); background: linear-gradient(90deg, var(--secondary-soft), transparent); }
+.card-shell:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: var(--shadow-subtle); }
+.card-shell.selected { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.card-shell.near { border-left: 3px solid var(--secondary); background: linear-gradient(90deg, var(--secondary-soft), transparent); }
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  margin: -4px -6px 8px -6px;
+  border-radius: 10px;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--pub-color), transparent 40%), var(--surface));
+  border: 1px solid color-mix(in srgb, var(--pub-color), var(--border));
+}
+.card-head-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pub-pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pub-color), transparent 80%);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--pub-color), var(--border));
+  font-weight: 600;
+}
+.evidence-card { border: none; padding: 0; }
 .evidence-title { font-size: 1rem; font-weight: 600; margin-bottom: 0.1rem; color: var(--text); }
 .evidence-meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.15rem; }
 .evidence-snippet { color: var(--text); line-height: 1.55; margin-top: 0.35rem; }
+.evidence-foot { margin-top: 8px; color: var(--muted-2); font-size: 0.9rem; }
 .score-row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 
-.action-row { display: flex; gap: 8px; margin-top: 10px; }
+.action-row { display: flex; gap: 8px; margin-top: 10px; transition: opacity 0.15s ease, max-height 0.2s ease; }
 .action-row button { width: 100%; }
+.stContainer:has(.card-shell) .card-actions { opacity: 0; max-height: 0; overflow: hidden; pointer-events: none; }
+.stContainer:has(.card-shell):hover .card-actions,
+.touch .card-actions { opacity: 1; max-height: 160px; pointer-events: all; }
+@media (hover: none) { .card-actions { opacity: 1 !important; max-height: 200px !important; pointer-events: all; } }
 
 .details-panel pre, .debug-block pre { background: var(--surface-2); border-radius: var(--radius-card); padding: 12px; border: 1px solid var(--border); font-family: var(--font-code); }
 
@@ -335,6 +364,8 @@ select:focus-visible,
 .context-pane { background: var(--surface); border-radius: var(--radius-card); padding: 0.6rem 0.8rem; border: 1px solid var(--border); box-shadow: var(--shadow-subtle); }
 .context-pane .stExpander { background: transparent; border: none; }
 .context-pane .stExpander > div { background: transparent; }
+.ctx-shell { transition: transform 0.18s ease, opacity 0.2s ease; opacity: 0.82; transform: translateX(8px); }
+.ctx-shell.active { opacity: 1; transform: translateX(0); }
 
 .hero {
   border: 1px solid var(--border);

@@ -22,7 +22,7 @@ def qp_set(**kw):
 def init_state():
     ss = st.session_state
 
-    ss.setdefault("theme_mode", "light")
+    ss.setdefault("theme_mode", "dark")
     ss.setdefault("show_debug", False)
     ss.setdefault("adv", False)
     ss.setdefault("mode", "quick")
@@ -150,19 +150,79 @@ def mode_selector():
 
 def topbar():
     ss = st.session_state
-    col1, col2 = st.columns([0.65, 0.35])
-    with col1:
-        st.markdown("<div class='topbar'><span class='brand'>RAG Books Search</span></div>", unsafe_allow_html=True)
-    with col2:
+    st.markdown(
+        """
+<div class="topbar">
+  <div class="brand">
+    <span class="logo"><i class="ph ph-books"></i></span>
+    <div class="name">
+      <span class="title">RAG Books Search</span>
+      <span class="muted">Evidence-first search</span>
+    </div>
+  </div>
+  <div class="icon-nav">
+    <span class="pill"><i class="ph ph-compass"></i> Explore</span>
+    <span class="pill"><i class="ph ph-stack-simple"></i> Context</span>
+    <span class="pill"><i class="ph ph-sparkle"></i> Judge on</span>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    ctrl_left, ctrl_right = st.columns([0.6, 0.4])
+    with ctrl_left:
+        st.markdown(
+            """
+<div class="slim-actions">
+  <span class="btn"><i class="ph ph-magnifying-glass"></i> Search books</span>
+  <span class="btn"><i class="ph ph-bookmarks-simple"></i> Pins</span>
+  <span class="btn"><i class="ph ph-git-branch"></i> Modes</span>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    with ctrl_right:
         c1, c2 = st.columns(2)
         with c1:
-            dark_pref = ss.get("theme_mode", "light") == "dark"
+            dark_pref = ss.get("theme_mode", "dark") == "dark"
             new_pref = st.toggle("Dark mode", value=dark_pref, key="dark_mode_toggle")
             ss["theme_mode"] = "dark" if new_pref else "light"
         with c2:
             st.checkbox("Debug", key="show_debug", help="Show timings & capabilities")
 
-    return ss.get("theme_mode", "light")
+    return ss.get("theme_mode", "dark")
+
+
+def render_hero():
+    st.markdown(
+        """
+<div class="hero">
+  <div>
+    <div class="hero-icon"><i class="ph ph-lightning"></i></div>
+    <h2>Dark, contrast-safe evidence search</h2>
+    <div class="lede">Start with a prompt or suggested topic to see citations, context, and near-miss passages without leaving the page.</div>
+    <div class="slim-actions">
+      <span class="btn"><i class="ph ph-flag-checkered"></i> Evidence-first</span>
+      <span class="btn"><i class="ph ph-eye"></i> Judge rerank on</span>
+      <span class="btn"><i class="ph ph-waves"></i> Reduced motion ready</span>
+    </div>
+  </div>
+  <div>
+    <div class="bullets">
+      <span class="item"><i class="ph ph-books"></i> Filter by publisher quickly</span>
+      <span class="item"><i class="ph ph-chats-circle"></i> Compact, icon-led navigation</span>
+      <span class="item"><i class="ph ph-device-mobile"></i> Context panel overlays on small screens</span>
+    </div>
+    <div class="stats" style="margin-top: 10px;">
+      <span class="stat"><i class="ph ph-magnifying-glass"></i> Ask anything</span>
+      <span class="stat"><i class="ph ph-bounding-box"></i> Gradient accent</span>
+      <span class="stat"><i class="ph ph-shield-checkered"></i> Focus rings</span>
+    </div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def sidebar(eng=None, startup_report=None, mount=None):
@@ -170,6 +230,7 @@ def sidebar(eng=None, startup_report=None, mount=None):
     host = mount or st.sidebar
     submitted = False
     with host:
+        st.markdown("<div class='rail'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Query</div>", unsafe_allow_html=True)
         with st.form("q_form", clear_on_submit=False):
             st.text_input(
@@ -313,5 +374,7 @@ def sidebar(eng=None, startup_report=None, mount=None):
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     return submitted

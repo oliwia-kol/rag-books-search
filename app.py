@@ -79,10 +79,11 @@ def main():
         if q0:
             ss["q_inp"] = q0
         ss["_qp_loaded"] = True
-
+    st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
     theme_mode = us.topbar()
     ut.apply_theme(theme_mode)
-    left, main_col, detail = st.columns([0.3, 0.46, 0.24], gap="large")
+    st.markdown("<div class='layout-grid'>", unsafe_allow_html=True)
+    left, main_col, detail = st.columns([0.28, 0.48, 0.24], gap="large")
 
     submitted = us.sidebar(ss["eng"], startup_report=ss.get("startup_report"), mount=left)
     if submitted:
@@ -101,11 +102,7 @@ def main():
 
         rr = ss.get("res")
         if not rr:
-            st.markdown(
-                "<div class='empty-state'>Enter a query on the left to see evidence-first results. "
-                "Near-miss results will appear separately when no direct evidence exists.</div>",
-                unsafe_allow_html=True,
-            )
+            us.render_hero()
         else:
             ua.render_status_strip(rr)
             ua.render_answer(rr)
@@ -113,11 +110,15 @@ def main():
             ua.render_near_miss(rr, q=ss.get("last_q", ""))
 
     with detail:
+        st.markdown("<div class='context-pane'>", unsafe_allow_html=True)
         with st.expander("Context / Details", expanded=True):
             ua.render_context_panel()
+        st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown("</div>", unsafe_allow_html=True)
     if ss.get("show_debug") and ss.get("res"):
         ua.render_power_panel(ss["res"])
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 if __name__ == "__main__":

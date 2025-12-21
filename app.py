@@ -25,6 +25,7 @@ def _run(eng, q: str):
     ss["act_hit"] = None
     ss["_scroll_ctx"] = False
     ss["_ctx_ts"] = None
+    ss["ev_offset"] = 0
     ss["res"] = None
     # judge is forced ON
     rr = re.run_query(

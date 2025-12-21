@@ -10,6 +10,7 @@ from ui_shell import JMIN_DEFAULT
 
 
 SNIPPET_MAX_CHARS = 240
+EVIDENCE_BATCH_SIZE = 8
 
 
 def _ws(s: str) -> str:
@@ -319,6 +320,13 @@ def _badge(cls: str, text: str) -> str:
     return f"<span class='chip {cls}'>{html.escape(text)}</span>"
 
 
+def _load_more_evidence(total: int):
+    ss = st.session_state
+    cur = int(ss.get("ev_offset", 0) or 0)
+    nxt = min(total, cur + EVIDENCE_BATCH_SIZE)
+    ss["ev_offset"] = nxt
+
+
 def render_status_strip(rr: Dict[str, Any]):
     meta = (rr or {}).get("meta", {})
     hits = (rr or {}).get("hits", [])
@@ -491,6 +499,7 @@ if (el){
 
 def render_evidence_list(rr: Dict[str, Any], q: str = ""):
     ss = st.session_state
+    ss.setdefault("ev_offset", 0)
     hs = list((rr or {}).get("hits") or [])
     if not hs:
         _render_no_results_suggestions(
@@ -509,11 +518,32 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
     mk = 8
     out: List[Dict[str, Any]] = [h for h in hs if _j01(h) >= jmn]
     if len(out) < mk:
-        out = hs[:mk]
+        out = hs
+
+    total = len(out)
+    off = int(ss.get("ev_offset", 0) or 0)
+    if off < 0 or off >= total:
+        off = 0
+    ss["ev_offset"] = off
+
+    end = min(total, max(EVIDENCE_BATCH_SIZE, off + EVIDENCE_BATCH_SIZE))
+    batch = out[:end]
 
     st.markdown("<div class='section-title'>Evidence</div>", unsafe_allow_html=True)
-    for i, h in enumerate(out):
+    for i, h in enumerate(batch):
         render_card(h, q, i)
+
+    remaining = total - end
+    if remaining > 0:
+        st.button(
+            "Load more",
+            key="evidence_load_more",
+            on_click=_load_more_evidence,
+            args=(total,),
+            help=f"Show {min(remaining, EVIDENCE_BATCH_SIZE)} more evidence cards",
+            use_container_width=True,
+        )
+        st.caption(f"{remaining} more evidence cards available")
 
 
 def _is_selected(h: Dict[str, Any]) -> bool:

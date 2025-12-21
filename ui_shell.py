@@ -42,10 +42,12 @@ def init_state():
     ss.setdefault("act_hit", None)      # active hit for context panel
 
     ss.setdefault("_toast", None)
+    ss.setdefault("_toast_last", None)
     ss.setdefault("_ui_err", None)
     ss.setdefault("_ui_err_id", None)
     ss.setdefault("_scroll_ctx", False)
     ss.setdefault("_ctx_ts", None)
+    ss.setdefault("ev_offset", 0)
 
 
 def toast_flush():
@@ -56,6 +58,7 @@ def toast_flush():
             st.toast(msg)
         except Exception:
             st.info(msg)
+        ss["_toast_last"] = msg
         ss["_toast"] = None
 
 
@@ -266,19 +269,29 @@ def sidebar(eng=None, startup_report=None, mount=None):
         if not ps:
             st.caption("Pin evidence cards to keep them here.")
         else:
+            st.markdown(
+                "<div class='scroll-area' style='max-height: 220px; overflow-y:auto; padding-right:6px;'>",
+                unsafe_allow_html=True,
+            )
             for i, p in enumerate(ps):
                 c1, c2 = st.columns([0.82, 0.18])
                 with c1:
                     st.write(_pin_lbl(p))
                 with c2:
                     st.button("Unpin", key=f"unpin_{i}", on_click=_pin_del, args=(i,), help="Unpin")
+            st.markdown("</div>", unsafe_allow_html=True)
             st.button("Clear pins", key="pins_clear", on_click=pins_clear, use_container_width=True)
 
         st.markdown("<div class='section-title'>Clipboard</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='scroll-area' style='max-height: 180px; overflow-y:auto; padding-right:6px;'>",
+            unsafe_allow_html=True,
+        )
         if ss.get("clip"):
             st.code(ss["clip"], language=None)
         else:
             st.caption("Use Copy on a card to put a citation here.")
+        st.markdown("</div>", unsafe_allow_html=True)
         st.button("Clear clipboard", key="clip_clear", on_click=cb_clear, use_container_width=True)
 
         st.divider()

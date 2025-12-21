@@ -9,6 +9,41 @@ import ui_adapter as ua
 import ui_shell as us
 
 
+class DummyEvidenceStreamlit:
+    def __init__(self):
+        self.calls = []
+        self.session_state = {}
+        self.load_more_pressed = False
+
+    def markdown(self, text, unsafe_allow_html=False):
+        self.calls.append(("markdown", text, unsafe_allow_html))
+        return text
+
+    def caption(self, text):
+        self.calls.append(("caption", text))
+        return text
+
+    def columns(self, n):
+        self.calls.append(("columns", n))
+        return [self for _ in range(n)]
+
+    def button(self, label, key=None, on_click=None, args=(), **kwargs):
+        self.calls.append(("button", label, key))
+        pressed = self.load_more_pressed and label == "Load more"
+        if pressed and on_click:
+            on_click(*args)
+        return pressed
+
+    def write(self, *args, **kwargs):
+        self.calls.append(("write", args, kwargs))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+
 def test_answer_clamps_after_five_sentences():
     ans = "One. Two. Three. Four. Five. Six. Seven."
     limited = ua._limit_answer_sentences(ans, max_sents=5)
@@ -135,3 +170,30 @@ def test_context_panel_ignores_stale_selection():
 
     assert st.session_state["act_hit"] is None
     st.session_state.clear()
+
+
+def test_evidence_list_lazy_loads_batches(monkeypatch):
+    dummy = DummyEvidenceStreamlit()
+    monkeypatch.setattr(ua, "st", dummy)
+    monkeypatch.setattr(us, "st", dummy)
+    us.init_state()
+
+    hits = [
+        {"cid": f"cid-{i}", "cidx": 0, "text": f"Hit {i}", "judge01": 0.9 - 0.01 * i}
+        for i in range(12)
+    ]
+
+    ua.render_evidence_list({"hits": hits}, q="python")
+    cards_first = sum(1 for c in dummy.calls if c[0] == "markdown" and "evidence-card" in c[1])
+    assert cards_first == min(len(hits), ua.EVIDENCE_BATCH_SIZE)
+
+    dummy.load_more_pressed = True
+    dummy.calls.clear()
+    ua.render_evidence_list({"hits": hits}, q="python")
+    assert dummy.session_state["ev_offset"] == ua.EVIDENCE_BATCH_SIZE
+
+    dummy.load_more_pressed = False
+    dummy.calls.clear()
+    ua.render_evidence_list({"hits": hits}, q="python")
+    cards_after = sum(1 for c in dummy.calls if c[0] == "markdown" and "evidence-card" in c[1])
+    assert cards_after == min(len(hits), ua.EVIDENCE_BATCH_SIZE * 2)

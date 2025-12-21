@@ -1534,6 +1534,25 @@ def run_query(
         qs = set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
         meta_jdg = {"ok": False, "kind": "none"}
 
+        corp_available = set((getattr(e, "corp", {}) or {}).keys())
+        pubs_requested = set(pubs or corp_available)
+        missing_corpora = sorted(pubs_requested - corp_available)
+        if missing_corpora:
+            msg = "Requested corpora are unavailable. Adjust publisher filters or load data."
+            err_id = _err_id(f"missing_corpora:{','.join(missing_corpora)}")
+            meta["err"] = {
+                "where": "run_query",
+                "msg": msg,
+                "id": err_id,
+                "missing": missing_corpora,
+            }
+            meta["t"]["total"] = _dt(t_total)
+            meta["flags"]["llm_bypassed"] = True
+            meta["flags"]["llm_used"] = False
+            meta["err_llm"] = None
+            _log_event(meta, mode_name, pubs or list(corp_available), len(q_clean or q or ""))
+            return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans=msg, meta=meta)
+
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
             msg = "No corpus indexes available. Add .data/ or data/ indexes, or set RAG_DATA_ROOT."
             err_id = _err_id("no_corpus_indexes")

@@ -83,6 +83,30 @@ def _snippet(h: Dict[str, Any], q: str = "", mx: int = SNIPPET_MAX_CHARS) -> str
     return _highlight_terms(t, terms)
 
 
+def _render_no_results_suggestions(title: str, reason: str, tips: Optional[List[str]] = None):
+    tips = tips or [
+        "Try broader keywords or fewer filters.",
+        "Switch modes to adjust depth vs. speed.",
+        "Verify the selected publishers have data available.",
+    ]
+    st.markdown(
+        """
+<div class="empty-state">
+  <div style="font-weight:600; margin-bottom:4px;">{title}</div>
+  <div style="color: var(--muted); margin-bottom:6px;">{reason}</div>
+  <ul style="margin:0 0 0.2rem 1.2rem; padding:0; color: var(--muted); line-height:1.5;">
+    {tips}
+  </ul>
+</div>
+""".format(
+            title=html.escape(title),
+            reason=html.escape(reason),
+            tips="".join([f"<li>{html.escape(t)}</li>" for t in tips]),
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _limit_answer_sentences(ans: str, max_sents: int = 5) -> Dict[str, Any]:
     sents = _split_sents(ans)
     limited = " ".join(sents[:max_sents]) if sents else ans
@@ -469,7 +493,15 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
     ss = st.session_state
     hs = list((rr or {}).get("hits") or [])
     if not hs:
-        st.markdown("<div class='empty-state'>No evidence yet. Run a search to see citations.</div>", unsafe_allow_html=True)
+        _render_no_results_suggestions(
+            "No evidence yet",
+            "Run a search to see citations, or adjust the query and publisher filters.",
+            tips=[
+                "Try different keywords or phrasing.",
+                "Select another publisher or clear corpus filters.",
+                "Switch modes if you need more depth or faster results.",
+            ],
+        )
         return
 
     hs.sort(key=_rank_key, reverse=True)
@@ -577,6 +609,15 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
         return
     nm = list((rr or {}).get("near_miss") or [])
     if not nm:
+        _render_no_results_suggestions(
+            "No near-miss results",
+            "We couldn’t find closely related passages.",
+            tips=[
+                "Loosen the query phrasing or add synonyms.",
+                "Try enabling additional publishers.",
+                "Lower the judge threshold in Settings to broaden matches.",
+            ],
+        )
         return
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
     reason = meta_nm.get("reason") or "Close but below judge/overlap threshold."

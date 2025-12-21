@@ -77,3 +77,25 @@ def test_near_miss_section_renders_banner_and_cards(monkeypatch):
     assert any(c[0] == "expander" and "Near misses" in c[1][0] for c in dummy.calls)
     assert any(c[0] == "info" and "Close but below" in c[1][0] for c in dummy.calls)
     assert any(c[0] == "caption" and "overlap" in str(c[1][0]) for c in dummy.calls)
+
+
+def test_near_miss_suggestions_render_when_empty(monkeypatch):
+    dummy = DummyStreamlit()
+    monkeypatch.setattr(ua, "st", dummy)
+
+    rr = {"no_evidence": True, "near_miss": [], "meta": {"meta_nm": {"reason": "near_miss_disabled"}}}
+
+    ua.render_near_miss(rr, q="python streaming")
+
+    assert any(c[0] == "markdown" and "No near-miss results" in c[1][0] for c in dummy.calls)
+    assert any("Loosen the query" in c[1][0] for c in dummy.calls if c[0] == "markdown")
+
+
+def test_evidence_list_suggestions_render_when_empty(monkeypatch):
+    dummy = DummyStreamlit()
+    monkeypatch.setattr(ua, "st", dummy)
+
+    ua.render_evidence_list({"hits": []}, q="biology")
+
+    assert any(c[0] == "markdown" and "No evidence yet" in c[1][0] for c in dummy.calls)
+    assert any("Select another publisher" in c[1][0] for c in dummy.calls if c[0] == "markdown")

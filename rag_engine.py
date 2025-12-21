@@ -1535,17 +1535,21 @@ def run_query(
         meta_jdg = {"ok": False, "kind": "none"}
 
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
+            msg = "No corpus indexes available. Add .data/ or data/ indexes, or set RAG_DATA_ROOT."
+            err_id = _err_id("no_corpus_indexes")
+            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id}
             meta["t"]["total"] = _dt(t_total)
             meta["flags"]["llm_bypassed"] = True
             meta["flags"]["llm_used"] = False
             meta["err_llm"] = None
+            _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q_clean or q or ""))
             return _mk_ret(
                 ok=False,
                 no_ev=True,
                 hits=[],
                 nm_hits=[],
                 cov="WEAK",
-                ans="No corpus indexes available. Add .data/ or data/ indexes, or set RAG_DATA_ROOT.",
+                ans=msg,
                 meta=meta,
             )
 

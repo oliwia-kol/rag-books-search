@@ -98,10 +98,10 @@ def test_jmin_default_matches_backend_and_display(monkeypatch):
 
     app._run(eng=None, q="hi")
 
-    assert st.session_state["jmin"] == us.JMIN_DEFAULT
-    assert captured["jmin"] == us.JMIN_DEFAULT
-    assert ua.JMIN_DEFAULT == us.JMIN_DEFAULT
-    assert re.J_DISP_MIN == us.JMIN_DEFAULT
+    assert st.session_state["jmin"] == us.DEFAULT_JMIN
+    assert captured["jmin"] == us.DEFAULT_JMIN
+    assert ua.JMIN_DEFAULT == us.DEFAULT_JMIN
+    assert re.J_DISP_MIN == us.DEFAULT_JMIN
     st.session_state.clear()
 
 

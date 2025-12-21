@@ -6,11 +6,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 import streamlit.components.v1 as components
 
-from ui_shell import JMIN_DEFAULT
+from ui_shell import DEFAULT_JMIN
 
 
 SNIPPET_MAX_CHARS = 240
 EVIDENCE_BATCH_SIZE = 8
+JMIN_DEFAULT = DEFAULT_JMIN
 
 
 def _ws(s: str) -> str:
@@ -514,7 +515,7 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
         return
 
     hs.sort(key=_rank_key, reverse=True)
-    jmn = float(ss.get("jmin", JMIN_DEFAULT))
+    jmn = float(ss.get("jmin", DEFAULT_JMIN))
     mk = 8
     out: List[Dict[str, Any]] = [h for h in hs if _j01(h) >= jmn]
     if len(out) < mk:

@@ -267,9 +267,28 @@ def _ctx_close():
     _toast("Context closed")
 
 
+def _ctx_nav(hits: List[Dict[str, Any]], current_idx: Optional[int], delta: int):
+    if current_idx is None:
+        return
+    nxt = current_idx + delta
+    if nxt < 0 or nxt >= len(hits):
+        return
+    _ctx_open(hits[nxt])
+
+
 def _rank_key(h: Dict[str, Any]) -> float:
     # judge is forced ON in this product
     return _j01(h)
+
+
+def _judge_tier(j: float) -> Tuple[str, str]:
+    if j >= 0.85:
+        return ("Strong", "success")
+    if j >= 0.65:
+        return ("Solid", "primary")
+    if j >= 0.4:
+        return ("Weak", "warning")
+    return ("Poor", "neutral")
 
 
 def _badge(cls: str, text: str) -> str:
@@ -355,13 +374,23 @@ def render_context_panel():
     ss = st.session_state
     h = ss.get("act_hit")
     rr = ss.get("res") or {}
-    if h and rr:
-        hits = rr.get("hits") or []
-        if not any(_cid(h) == _cid(x) and _cidx(h) == _cidx(x) for x in hits):
+    hits = list((rr or {}).get("hits") or [])
+    current_idx: Optional[int] = None
+    if h and hits:
+        for idx, x in enumerate(hits):
+            if _cid(h) == _cid(x) and _cidx(h) == _cidx(x):
+                current_idx = idx
+                break
+        if current_idx is None:
             h = None
             ss["act_hit"] = None
             ss["_scroll_ctx"] = False
             ss["_ctx_ts"] = None
+    elif h and not hits:
+        h = None
+        ss["act_hit"] = None
+        ss["_scroll_ctx"] = False
+        ss["_ctx_ts"] = None
     with st.container():
         st.markdown('<div id="ctx_panel"></div>', unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Details</div>", unsafe_allow_html=True)
@@ -371,7 +400,29 @@ def render_context_panel():
             tt = _pretty_title(h)
             sec = _sec_lbl(h)
             st.markdown(f"<div class='chips'>{_badge('primary', tt)}{_badge('muted', sec) if sec else ''}</div>", unsafe_allow_html=True)
-            st.button("Clear selection", key="ctx_close", on_click=_ctx_close, help="Close details")
+            nav_close, nav_prev, nav_next = st.columns([0.34, 0.33, 0.33])
+            with nav_close:
+                st.button("Close", key="ctx_close", on_click=_ctx_close, help="Close details", use_container_width=True)
+            with nav_prev:
+                st.button(
+                    "Previous",
+                    key="ctx_prev",
+                    on_click=_ctx_nav,
+                    args=(hits, current_idx, -1),
+                    disabled=current_idx in (None, 0),
+                    help="View the previous evidence card",
+                    use_container_width=True,
+                )
+            with nav_next:
+                st.button(
+                    "Next",
+                    key="ctx_next",
+                    on_click=_ctx_nav,
+                    args=(hits, current_idx, 1),
+                    disabled=current_idx is None or current_idx >= len(hits) - 1,
+                    help="View the next evidence card",
+                    use_container_width=True,
+                )
             st.caption("Excerpt")
             st.markdown(
                 """
@@ -444,6 +495,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     pub = _pub(h)
     sec = _sec_lbl(h)
     j = _j01(h)
+    tier_lbl, tier_cls = _judge_tier(j)
     ov = (h or {}).get("overlap")
 
     classes = ["evidence-card"]
@@ -454,7 +506,8 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
 
     score_chips = [
         _badge("muted", f"#{i+1}"),
-        _badge("primary", f"J: {j:.2f}"),
+        _badge(tier_cls, tier_lbl),
+        _badge(tier_cls, f"J: {j:.2f}"),
         _badge("muted", f"S: {_score(h):.2f}"),
     ]
     if near_miss:

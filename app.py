@@ -25,6 +25,7 @@ def _run(eng, q: str):
     ss["act_hit"] = None
     ss["_scroll_ctx"] = False
     ss["_ctx_ts"] = None
+    ss["res"] = None
     # judge is forced ON
     rr = re.run_query(
         eng,
@@ -52,6 +53,7 @@ def _run(eng, q: str):
 def _on_search():
     ss = st.session_state
     q = (ss.get("q_inp") or "").strip()
+    ss["act_hit"] = None
     if not q:
         return
     try:

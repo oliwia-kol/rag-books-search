@@ -1,5 +1,5 @@
 import html
-import re
+import re as regex
 
 import streamlit as st
 
@@ -44,7 +44,7 @@ def test_coverage_counts_single_source_warning():
 def test_snippet_highlights_and_clamps():
     long_text = " ".join(["highlight me"] * 80)
     snip = ua._snippet({"text": long_text}, q="highlight")
-    plain = re.sub("<.*?>", "", snip)
+    plain = regex.sub("<.*?>", "", snip)
     assert len(html.unescape(plain)) <= ua.SNIPPET_MAX_CHARS
     assert 'class="hl"' in snip
 
@@ -95,6 +95,29 @@ def test_context_resets_on_new_search(monkeypatch):
     assert st.session_state["_ctx_ts"] is None
 
     ua.render_context_panel()
+    st.session_state.clear()
+
+
+def test_on_search_resets_selection_before_results(monkeypatch):
+    st.session_state.clear()
+    us.init_state()
+    st.session_state["eng"] = object()
+    st.session_state["act_hit"] = {"cid": "stale", "cidx": 7}
+    st.session_state["q_inp"] = "refresh"
+
+    captured: dict = {}
+
+    def fake_run_query(eng, q, **kwargs):
+        captured["act_hit_before_run"] = st.session_state.get("act_hit")
+        return {"hits": [{"cid": "cid-new", "cidx": 0, "text": "New", "judge01": 0.77}], "meta": {}}
+
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
+
+    app._on_search()
+
+    assert captured["act_hit_before_run"] is None
+    assert st.session_state["act_hit"] is None
+    assert st.session_state["res"]["hits"][0]["cid"] == "cid-new"
     st.session_state.clear()
 
 

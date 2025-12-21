@@ -61,8 +61,6 @@ def _on_search():
 
 def main():
     us.init_state()
-    ut.apply_theme(st.session_state.get("theme_mode", "light"))
-
     ss = st.session_state
     if "eng" not in ss:
         ss["eng"] = _mk_eng()
@@ -77,6 +75,7 @@ def main():
         ss["_qp_loaded"] = True
 
     us.topbar()
+    ut.apply_theme(ss.get("theme_mode", "light"))
     left, main_col, detail = st.columns([0.3, 0.46, 0.24], gap="large")
 
     submitted = us.sidebar(ss["eng"], startup_report=ss.get("startup_report"), mount=left)

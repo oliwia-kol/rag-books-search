@@ -2,6 +2,8 @@ import streamlit as st
 
 import rag_engine as re
 
+JMIN_DEFAULT = 0.45
+
 
 def qp_get(k: str, d=None):
     try:
@@ -28,7 +30,7 @@ def init_state():
     ss.setdefault("srt", "Best evidence")
     ss.setdefault("nm", True)           # show near-miss when ok=True
     ss.setdefault("nm_skip", False)     # skip near-miss computation to save cost
-    ss.setdefault("jmin", 0.45)         # display min judge01
+    ss.setdefault("jmin", JMIN_DEFAULT)  # display min judge01
     ss.setdefault("judge_mode", "real")  # judge mode: real / proxy / off
     if "jdg_mode" in ss:
         ss.setdefault("judge_mode", ss.get("jdg_mode"))
@@ -206,7 +208,7 @@ def sidebar(eng=None, startup_report=None, mount=None):
                 srt_idx = 0
             ss["srt"] = st.selectbox("", srt_opts, index=srt_idx, key="srt", label_visibility="collapsed")
             st.caption("Min judge01 (display)")
-            ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", 0.35)), 0.05, label_visibility="collapsed")
+            ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", JMIN_DEFAULT)), 0.05, label_visibility="collapsed")
             st.toggle("Skip near-miss computation (faster)", key="nm_skip")
 
         st.divider()

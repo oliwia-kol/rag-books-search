@@ -1,7 +1,11 @@
 import html
 import re
 
+import streamlit as st
+
+import app
 import ui_adapter as ua
+import ui_shell as us
 
 
 def test_answer_clamps_after_five_sentences():
@@ -42,3 +46,23 @@ def test_snippet_highlights_and_clamps():
     plain = re.sub("<.*?>", "", snip)
     assert len(html.unescape(plain)) <= ua.SNIPPET_MAX_CHARS
     assert 'class="hl"' in snip
+
+
+def test_jmin_default_matches_backend_and_display(monkeypatch):
+    st.session_state.clear()
+    us.init_state()
+
+    captured: dict = {}
+
+    def fake_run_query(eng, q, **kwargs):
+        captured["jmin"] = kwargs.get("jmin")
+        return {"meta": {}}
+
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
+
+    app._run(eng=None, q="hi")
+
+    assert st.session_state["jmin"] == us.JMIN_DEFAULT
+    assert captured["jmin"] == us.JMIN_DEFAULT
+    assert ua.JMIN_DEFAULT == us.JMIN_DEFAULT
+    st.session_state.clear()

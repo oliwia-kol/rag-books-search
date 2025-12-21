@@ -32,7 +32,7 @@ def _run(eng, q: str):
         sort=ss.get("srt", "Best evidence"),
         show_nm=bool(ss.get("nm", True)),
         nm=not bool(ss.get("nm_skip", False)),
-        jmin=float(ss.get("jmin", 0.45)),
+        jmin=float(ss.get("jmin", us.JMIN_DEFAULT)),
         mode=ss.get("mode", "quick"),
     )
     ss["res"] = rr

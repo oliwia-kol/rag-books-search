@@ -1,3 +1,4 @@
+import hashlib
 import html
 import re
 import time
@@ -91,19 +92,18 @@ def _render_no_results_suggestions(title: str, reason: str, tips: Optional[List[
         "Switch modes to adjust depth vs. speed.",
         "Verify the selected publishers have data available.",
     ]
+    chips = "".join([_badge("muted", t) for t in tips])
     st.markdown(
         """
 <div class="empty-state">
   <div style="font-weight:600; margin-bottom:4px;">{title}</div>
   <div style="color: var(--muted); margin-bottom:6px;">{reason}</div>
-  <ul style="margin:0 0 0.2rem 1.2rem; padding:0; color: var(--muted); line-height:1.5;">
-    {tips}
-  </ul>
+  <div class="chips" style="margin-top: 0.35rem;">{chips}</div>
 </div>
 """.format(
             title=html.escape(title),
             reason=html.escape(reason),
-            tips="".join([f"<li>{html.escape(t)}</li>" for t in tips]),
+            chips=chips,
         ),
         unsafe_allow_html=True,
     )
@@ -290,6 +290,8 @@ def _ctx_open(h: Dict[str, Any]):
 
 def _ctx_close():
     st.session_state["act_hit"] = None
+    st.session_state["_ctx_ts"] = None
+    st.session_state["_scroll_ctx"] = False
     _toast("Context closed")
 
 
@@ -319,6 +321,20 @@ def _judge_tier(j: float) -> Tuple[str, str]:
 
 def _badge(cls: str, text: str) -> str:
     return f"<span class='chip {cls}'>{html.escape(text)}</span>"
+
+
+def _pub_tint(pub: str) -> str:
+    pub = (pub or "").strip().lower()
+    if not pub:
+        return "#5b6b7b"
+    h_bytes = hashlib.md5(pub.encode()).digest()
+    h = int.from_bytes(h_bytes[:2], "big") % 360
+    return f"hsl({h}, 65%, 62%)"
+
+
+def _strength_badge(j: float) -> str:
+    tier_lbl, tier_cls = _judge_tier(j)
+    return _badge(tier_cls, tier_lbl)
 
 
 def _load_more_evidence(total: int):
@@ -408,6 +424,7 @@ def render_context_panel():
     h = ss.get("act_hit")
     rr = ss.get("res") or {}
     hits = list((rr or {}).get("hits") or [])
+    terms = re.findall(r"[A-Za-z0-9]{3,}", ss.get("last_q", "") or "")
     current_idx: Optional[int] = None
     if h and hits:
         for idx, x in enumerate(hits):
@@ -426,14 +443,24 @@ def render_context_panel():
         ss["_ctx_ts"] = None
     with st.container():
         st.markdown('<div id="ctx_panel"></div>', unsafe_allow_html=True)
-        st.markdown("<div class='section-title'>Details</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='section-title'>Details</div>",
+            unsafe_allow_html=True,
+        )
         if not h:
-            st.markdown("<div class='empty-state'>Select an evidence card to view full context.</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div class='empty-state ctx-shell'>Select an evidence card to view full context.</div>",
+                unsafe_allow_html=True,
+            )
         else:
             tt = _pretty_title(h)
             sec = _sec_lbl(h)
-            st.markdown(f"<div class='chips'>{_badge('primary', tt)}{_badge('muted', sec) if sec else ''}</div>", unsafe_allow_html=True)
-            nav_close, nav_prev, nav_next = st.columns([0.34, 0.33, 0.33])
+            ctx_cls = "ctx-shell active"
+            st.markdown(
+                f"<div class='{ctx_cls}'><div class='chips'>{_badge('primary', tt)}{_badge('muted', sec) if sec else ''}</div>",
+                unsafe_allow_html=True,
+            )
+            nav_close, nav_prev, nav_next = st.columns([0.32, 0.34, 0.34])
             with nav_close:
                 st.button("Close", key="ctx_close", on_click=_ctx_close, help="Close details", use_container_width=True)
             with nav_prev:
@@ -462,7 +489,9 @@ def render_context_panel():
 <div class="details-panel">
   <pre style="white-space:pre-wrap; line-height:1.6;">{tx}</pre>
 </div>
-""".format(tx=html.escape(_ws((h or {}).get("ctx") or (h or {}).get("text") or ""))),
+""".format(
+                    tx=_highlight_terms(_ws((h or {}).get("ctx") or (h or {}).get("text") or ""), terms)
+                ),
                 unsafe_allow_html=True,
             )
             st.caption("Metadata")
@@ -482,6 +511,7 @@ def render_context_panel():
                 ),
                 unsafe_allow_html=True,
             )
+            st.markdown("</div>", unsafe_allow_html=True)
 
     if ss.get("_scroll_ctx"):
         ss["_scroll_ctx"] = False
@@ -502,6 +532,11 @@ def render_evidence_list(rr: Dict[str, Any], q: str = ""):
     ss = st.session_state
     ss.setdefault("ev_offset", 0)
     hs = list((rr or {}).get("hits") or [])
+    if ss.get("_loading"):
+        st.markdown("<div class='section-title'>Evidence</div>", unsafe_allow_html=True)
+        for _ in range(3):
+            st.markdown("<div class='skeleton'></div>", unsafe_allow_html=True)
+        return
     if not hs:
         _render_no_results_suggestions(
             "No evidence yet",
@@ -560,6 +595,10 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     j = _j01(h)
     tier_lbl, tier_cls = _judge_tier(j)
     ov = (h or {}).get("overlap")
+    try:
+        card_container = st.container()
+    except Exception:
+        card_container = st
 
     classes = ["evidence-card"]
     if near_miss:
@@ -573,21 +612,21 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
         _badge(tier_cls, f"J: {j:.2f}"),
         _badge("muted", f"S: {_score(h):.2f}"),
     ]
-    if near_miss:
-        score_chips.append(_badge("secondary", "Near-miss"))
 
-    st.markdown(
+    card_container.markdown(
         """
-<div class="{cls}">
-  <div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">
-    <div>
-      <div class="evidence-title">{title}</div>
-      <div class="evidence-meta">{meta}</div>
+<div class="card-shell {cls}" style="--pub-color:{pub_color};">
+  <div class="card-head">
+    <div class="card-head-left">
+      <div class="pub-pill">{pub}</div>
+      <div class="chips">{strength}{near}</div>
     </div>
     <div class="score-row">{chips}</div>
   </div>
+  <div class="evidence-title">{title}</div>
+  <div class="evidence-meta">{meta}</div>
   <div class="evidence-snippet">{snippet}</div>
-  <div style="margin-top:8px; color: var(--muted-2); font-size:0.9rem;">{detail}</div>
+  <div class="evidence-foot">{detail}</div>
 </div>
 """.format(
             cls=" ".join(classes),
@@ -599,11 +638,20 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
                 (f"overlap {int(ov)} | " if near_miss and ov is not None else "")
                 + f"judge01 {j:.2f} • score {_score(h):.2f}"
             ),
+            pub_color=_pub_tint(pub),
+            pub=html.escape(pub or "Unknown publisher"),
+            strength=_strength_badge(j),
+            near=_badge("secondary", "Near-miss") if near_miss else "",
         ),
         unsafe_allow_html=True,
     )
 
-    b1, b2, b3 = st.columns(3)
+    try:
+        action_wrap = card_container.container()
+    except Exception:
+        action_wrap = card_container
+    action_wrap.markdown("<div class='action-row card-actions'>", unsafe_allow_html=True)
+    b1, b2, b3 = action_wrap.columns(3)
     with b1:
         st.button(
             "Pin",
@@ -631,6 +679,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
             args=(h,),
             help="Open the context panel",
         )
+    action_wrap.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_near_miss(rr: Dict[str, Any], q: str = ""):
@@ -660,6 +709,7 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
 <div class="panel" style="margin-top:8px;">
   <div style="color: var(--muted); margin-bottom:6px;">These overlap with the query but didn’t meet the evidence threshold.</div>
   <div class="chips">{chips}</div>
+  <div class="chips" style="margin-top:6px;">{suggestions}</div>
 </div>
 """.format(
                 chips="".join(
@@ -668,7 +718,14 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
                         _badge("muted", f"Threshold {meta_nm.get('threshold', 0):.2f}"),
                         _badge("muted", f"Reason: {reason}"),
                     ]
-                )
+                ),
+                suggestions="".join(
+                    [
+                        _badge("muted", "Try a broader phrasing"),
+                        _badge("muted", "Lower judge threshold in Settings"),
+                        _badge("muted", "Enable more publishers for recall"),
+                    ]
+                ),
             ),
             unsafe_allow_html=True,
         )

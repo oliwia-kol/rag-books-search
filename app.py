@@ -22,42 +22,50 @@ def _mk_eng():
 def _run(eng, q: str):
     ss = st.session_state
     pubs = ss.get("pubs", [])
+    ss["_loading"] = True
     ss["act_hit"] = None
     ss["_scroll_ctx"] = False
     ss["_ctx_ts"] = None
     ss["ev_offset"] = 0
     ss["res"] = None
     # judge is forced ON
-    rr = re.run_query(
-        eng,
-        q,
-        pubs=pubs,
-        use_jdg=True,
-        judge_mode=ss.get("judge_mode", ss.get("jdg_mode", "proxy")),
-        sort=ss.get("srt", us.SORT_OPTIONS[0]),
-        show_nm=bool(ss.get("nm", True)),
-        nm=not bool(ss.get("nm_skip", False)),
-        jmin=float(ss.get("jmin", us.DEFAULT_JMIN)),
-        mode=ss.get("mode", "quick"),
-    )
-    ss["res"] = rr
-    ss["last_q"] = q
-    if rr.get("meta", {}).get("err"):
-        err = rr["meta"]["err"]
-        ss["_ui_err"] = us.format_ui_error(err.get("id"), err.get("msg"))
-        ss["_ui_err_id"] = err.get("id")
-    else:
-        ss["_ui_err"] = None
-        ss["_ui_err_id"] = None
+    try:
+        rr = re.run_query(
+            eng,
+            q,
+            pubs=pubs,
+            use_jdg=True,
+            judge_mode=ss.get("judge_mode", ss.get("jdg_mode", "proxy")),
+            sort=ss.get("srt", us.SORT_OPTIONS[0]),
+            show_nm=bool(ss.get("nm", True)),
+            nm=not bool(ss.get("nm_skip", False)),
+            jmin=float(ss.get("jmin", us.DEFAULT_JMIN)),
+            mode=ss.get("mode", "quick"),
+        )
+        ss["res"] = rr
+        ss["last_q"] = q
+        if rr.get("meta", {}).get("err"):
+            err = rr["meta"]["err"]
+            ss["_ui_err"] = us.format_ui_error(err.get("id"), err.get("msg"))
+            ss["_ui_err_id"] = err.get("id")
+        else:
+            ss["_ui_err"] = None
+            ss["_ui_err_id"] = None
+    finally:
+        ss["_loading"] = False
 
 
 def _on_search():
     ss = st.session_state
     q = (ss.get("q_inp") or "").strip()
+    ss["_loading"] = False
     ss["act_hit"] = None
+    ss["_scroll_ctx"] = False
+    ss["_ctx_ts"] = None
     if not q:
         return
     try:
+        ss["_loading"] = True
         _run(ss["eng"], q)
         us.qp_set(q=q)
         hist = ss.get("q_history", [])
@@ -68,6 +76,8 @@ def _on_search():
     except Exception as e:
         ss["_ui_err"] = us.format_ui_error(None, f"{type(e).__name__}: {e}")
         ss["_ui_err_id"] = None
+    finally:
+        ss["_loading"] = False
 
 
 def main():

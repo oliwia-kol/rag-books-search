@@ -60,8 +60,8 @@ def _on_search():
 
 
 def main():
-    ut.apply_theme()
     us.init_state()
+    ut.apply_theme(st.session_state.get("theme_mode", "light"))
 
     ss = st.session_state
     if "eng" not in ss:
@@ -76,36 +76,43 @@ def main():
             ss["q_inp"] = q0
         ss["_qp_loaded"] = True
 
-    us.sidebar(ss["eng"], startup_report=ss.get("startup_report"))
+    us.topbar()
+    left, main_col, detail = st.columns([0.3, 0.46, 0.24], gap="large")
+
+    submitted = us.sidebar(ss["eng"], startup_report=ss.get("startup_report"), mount=left)
+    if submitted:
+        _on_search()
+
     us.toast_flush()
 
-    st.title("RAG Books Search")
-    mode_cfg = re.get_mode_cfg(ss.get("mode", "quick"))
-    st.caption(
-        f"Mode: {mode_cfg.get('label', 'Quick')} — {mode_cfg.get('description', 'Speed vs depth')}"
-    )
-    st.caption("evidence-first • judge ON • CPU-friendly")
-
-    with st.form("q_form", clear_on_submit=False):
-        st.text_input(
-            "Query",
-            key="q_inp",
-            placeholder="e.g. What is model monitoring in production?",
+    with main_col:
+        mode_cfg = re.get_mode_cfg(ss.get("mode", "quick"))
+        st.markdown(
+            f"<div class='section-title'>Mode</div><div class='chip muted'>{mode_cfg.get('label', 'Quick')}</div>",
+            unsafe_allow_html=True,
         )
-        st.form_submit_button("Search", on_click=_on_search)
+        st.caption(mode_cfg.get("description", "Speed vs depth"))
+        us.global_error_box()
 
-    us.global_error_box()
+        rr = ss.get("res")
+        if not rr:
+            st.markdown(
+                "<div class='empty-state'>Enter a query on the left to see evidence-first results. "
+                "Near-miss results will appear separately when no direct evidence exists.</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            ua.render_status_strip(rr)
+            ua.render_answer(rr)
+            ua.render_evidence_list(rr, q=ss.get("last_q", ""))
+            ua.render_near_miss(rr, q=ss.get("last_q", ""))
 
-    rr = ss.get("res")
-    if not rr:
-        return
+    with detail:
+        with st.expander("Context / Details", expanded=True):
+            ua.render_context_panel()
 
-    ua.render_answer(rr)
-    ua.render_conf(rr)
-    ua.render_context_panel()
-    ua.render_evidence_list(rr, q=ss.get("last_q", ""))
-    ua.render_near_miss(rr, q=ss.get("last_q", ""))
-    ua.render_power_panel(rr)
+    if ss.get("show_debug") and ss.get("res"):
+        ua.render_power_panel(ss["res"])
 
 
 if __name__ == "__main__":

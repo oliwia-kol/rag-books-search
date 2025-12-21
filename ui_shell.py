@@ -20,7 +20,8 @@ def qp_set(**kw):
 def init_state():
     ss = st.session_state
 
-    # stable defaults
+    ss.setdefault("theme_mode", "light")
+    ss.setdefault("show_debug", False)
     ss.setdefault("adv", False)
     ss.setdefault("mode", "quick")
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
@@ -32,17 +33,17 @@ def init_state():
     if "jdg_mode" in ss:
         ss.setdefault("judge_mode", ss.get("jdg_mode"))
 
-    # HARD REQUIREMENTS
-    ss["use_jdg"] = True               # judge must be ON by default (and stay on)
+    ss["use_jdg"] = True                # judge must be ON by default (and stay on)
 
-    ss.setdefault("pins", [])          # list[dict]
+    ss.setdefault("pins", [])           # list[dict]
     ss.setdefault("clip", "")
-    ss.setdefault("act_hit", None)     # active hit for context panel
+    ss.setdefault("act_hit", None)      # active hit for context panel
 
     ss.setdefault("_toast", None)
     ss.setdefault("_ui_err", None)
     ss.setdefault("_ui_err_id", None)
     ss.setdefault("_scroll_ctx", False)
+    ss.setdefault("_ctx_ts", None)
 
 
 def toast_flush():
@@ -142,45 +143,52 @@ def mode_selector():
     return choice
 
 
-def sidebar(eng=None, startup_report=None):
+def topbar():
     ss = st.session_state
-    with st.sidebar:
-        st.toggle("Advanced", key="adv")
-        st.markdown(
-            "<div class='mode-kicker'>"
-            "<span class='ui-badge ui-badge-strong'>Mode selector</span>"
-            "<span class='ui-badge ui-badge-muted'>Speed vs depth</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Mode")
-        mode_selector()
-        st.caption("Balance response speed and citation depth.")
+    col1, col2 = st.columns([0.65, 0.35])
+    with col1:
+        st.markdown("<div class='topbar'><span class='brand'>RAG Books Search</span></div>", unsafe_allow_html=True)
+    with col2:
+        c1, c2 = st.columns(2)
+        with c1:
+            dark_pref = ss.get("theme_mode", "light") == "dark"
+            new_pref = st.toggle("Dark mode", value=dark_pref, key="dark_mode_toggle")
+            ss["theme_mode"] = "dark" if new_pref else "light"
+        with c2:
+            st.checkbox("Debug", key="show_debug", help="Show timings & capabilities")
 
-        if eng is not None:
-            rep = re.get_startup_report(eng)
-            ok = rep.get("ok", []) if isinstance(rep, dict) else []
-            fail = rep.get("fail", []) if isinstance(rep, dict) else []
-            st.caption(f"Startup: loaded {len(ok)} / {len(ok)+len(fail)} corpora")
-            if fail:
-                with st.expander("Corpus status", expanded=False):
-                    for k, v in rep.get("by_corpus", {}).items():
-                        emoji = "✅" if v.get("ready") or v.get("ok") else "⚠️"
-                        reasons = ", ".join(v.get("reasons", []))
-                        st.write(f"{emoji} {k}: dense_loaded={v.get('dense_loaded')} db_loaded={v.get('db_loaded')} dim_ok={v.get('dim_ok')} {reasons}")
 
-        st.caption("Publisher scope")
-        # multi-select pills-ish
+def sidebar(eng=None, startup_report=None, mount=None):
+    ss = st.session_state
+    host = mount or st.sidebar
+    submitted = False
+    with host:
+        st.markdown("<div class='section-title'>Query</div>", unsafe_allow_html=True)
+        with st.form("q_form", clear_on_submit=False):
+            st.text_area(
+                "",
+                key="q_inp",
+                placeholder="Ask about the books…",
+                label_visibility="collapsed",
+                height=88,
+            )
+            submitted = st.form_submit_button("Search", use_container_width=True)
+
+        st.markdown("<div class='section-title'>Publishers</div>", unsafe_allow_html=True)
         ss["pubs"] = st.multiselect(
-            "",
+            "Publishers",
             options=["OReilly", "Manning", "Pearson"],
             default=ss.get("pubs", []),
             label_visibility="collapsed",
         )
 
-        # judge is always ON. show status only.
-        st.caption("Judge")
-        st.checkbox("USE_JDG (rerank)", value=True, disabled=True, help="Forced ON", key="_use_jdg_view")
+        st.markdown("<div class='section-title'>Mode</div>", unsafe_allow_html=True)
+        mode_selector()
+        st.caption("Fast vs depth presets.")
+
+        st.markdown("<div class='section-title'>Toggles</div>", unsafe_allow_html=True)
+        st.toggle("Near-miss", key="nm", value=ss.get("nm", True), help="Show weak overlaps when no direct evidence.")
+        st.toggle("Judge (forced ON)", key="_use_jdg_view", value=True, disabled=True, help="Cross-encoder rerank")
         st.selectbox(
             "Judge mode",
             options=["proxy", "real", "off"],
@@ -189,55 +197,38 @@ def sidebar(eng=None, startup_report=None):
             key="judge_mode",
         )
 
-        if eng is not None:
-            st.caption("Startup status")
-            try:
-                rep = getattr(eng, "corp_status", {}) or {}
-                for name, r in rep.items():
-                    ok = r.get("loaded") and r.get("dim_ok")
-                    lbl = "loaded" if ok else "failed"
-                    reason = ", ".join(r.get("reasons", []) or [])
-                    st.write(f"{name}: {lbl}" + (f" ({reason})" if reason else ""))
-            except Exception:
-                st.write("status unavailable")
-
-        if ss.get("adv"):
+        with st.expander("Advanced", expanded=False):
             st.caption("Sort")
             ss["srt"] = st.selectbox("", ["Best evidence", "Semantic"], index=0, label_visibility="collapsed")
-
             st.caption("Min judge01 (display)")
             ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", 0.35)), 0.05, label_visibility="collapsed")
-
-            st.toggle("Show near-miss even when ok=True", key="nm")
             st.toggle("Skip near-miss computation (faster)", key="nm_skip")
 
         st.divider()
 
-        st.subheader("Pinned")
+        st.markdown("<div class='section-title'>Pinned</div>", unsafe_allow_html=True)
         ps = ss.get("pins", [])
         if not ps:
             st.caption("Pin evidence cards to keep them here.")
         else:
             for i, p in enumerate(ps):
-                c1, c2 = st.columns([0.88, 0.12])
+                c1, c2 = st.columns([0.82, 0.18])
                 with c1:
                     st.write(_pin_lbl(p))
                 with c2:
-                    st.button("×", key=f"unpin_{i}", on_click=_pin_del, args=(i,), help="Unpin")
-            st.button("Clear pins", key="pins_clear", on_click=pins_clear)
+                    st.button("Unpin", key=f"unpin_{i}", on_click=_pin_del, args=(i,), help="Unpin")
+            st.button("Clear pins", key="pins_clear", on_click=pins_clear, use_container_width=True)
 
-        st.divider()
-
-        st.subheader("Clipboard")
+        st.markdown("<div class='section-title'>Clipboard</div>", unsafe_allow_html=True)
         if ss.get("clip"):
             st.code(ss["clip"], language=None)
         else:
             st.caption("Use Copy on a card to put a citation here.")
-        st.button("Clear clipboard", key="clip_clear", on_click=cb_clear)
+        st.button("Clear clipboard", key="clip_clear", on_click=cb_clear, use_container_width=True)
 
         st.divider()
 
-        st.subheader("Startup status")
+        st.markdown("<div class='section-title'>Startup</div>", unsafe_allow_html=True)
         summary = startup_report or {}
         rows = summary.get("rows", []) if isinstance(summary, dict) else summary
         if not rows:
@@ -254,3 +245,5 @@ def sidebar(eng=None, startup_report=None):
                     f"</div>",
                     unsafe_allow_html=True,
                 )
+
+    return submitted

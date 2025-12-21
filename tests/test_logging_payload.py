@@ -41,3 +41,11 @@ def test_error_id_propagates(monkeypatch):
     assert res["meta"].get("err", {}).get("id")
     assert res["meta"].get("log", {}).get("error_id") == res["meta"].get("err", {}).get("id")
     assert res["meta"]["err"].get("id", "").startswith("err-")
+
+
+def test_error_id_logged_when_no_corpus(monkeypatch):
+    eng = re.Eng(emb=None, ix={}, dbp={}, corp={}, ix_dim={}, corp_report={})
+    res = re.run_query(eng, "query", pubs=None, use_llm=False)
+    err_id = res["meta"].get("err", {}).get("id")
+    assert err_id
+    assert res["meta"].get("log", {}).get("error_id") == err_id

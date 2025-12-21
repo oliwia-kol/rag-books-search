@@ -22,6 +22,9 @@ def _mk_eng():
 def _run(eng, q: str):
     ss = st.session_state
     pubs = ss.get("pubs", [])
+    ss["act_hit"] = None
+    ss["_scroll_ctx"] = False
+    ss["_ctx_ts"] = None
     # judge is forced ON
     rr = re.run_query(
         eng,

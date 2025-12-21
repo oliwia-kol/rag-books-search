@@ -66,3 +66,47 @@ def test_jmin_default_matches_backend_and_display(monkeypatch):
     assert captured["jmin"] == us.JMIN_DEFAULT
     assert ua.JMIN_DEFAULT == us.JMIN_DEFAULT
     st.session_state.clear()
+
+
+def test_context_resets_on_new_search(monkeypatch):
+    st.session_state.clear()
+    us.init_state()
+
+    hits_first = [{"cid": "cid-1", "cidx": 0, "text": "First", "judge01": 0.9}]
+    hits_second = [{"cid": "cid-2", "cidx": 0, "text": "Second", "judge01": 0.8}]
+
+    def fake_run_query(eng, q, **kwargs):
+        if q == "first":
+            return {"hits": hits_first, "meta": {}}
+        return {"hits": hits_second, "meta": {}}
+
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
+
+    app._run(eng=None, q="first")
+    ua._ctx_open(hits_first[0])
+    assert st.session_state["act_hit"]["cid"] == "cid-1"
+
+    app._run(eng=None, q="second")
+
+    assert st.session_state["act_hit"] is None
+    assert st.session_state["_scroll_ctx"] is False
+    assert st.session_state["_ctx_ts"] is None
+
+    ua.render_context_panel()
+    st.session_state.clear()
+
+
+def test_context_panel_ignores_stale_selection():
+    st.session_state.clear()
+    us.init_state()
+
+    hits_first = [{"cid": "cid-1", "cidx": 0, "text": "First", "judge01": 0.9}]
+    hits_second = [{"cid": "cid-2", "cidx": 0, "text": "Second", "judge01": 0.8}]
+
+    st.session_state["res"] = {"hits": hits_second, "meta": {}}
+    st.session_state["act_hit"] = hits_first[0]
+
+    ua.render_context_panel()
+
+    assert st.session_state["act_hit"] is None
+    st.session_state.clear()

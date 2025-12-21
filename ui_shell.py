@@ -1,8 +1,11 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
 import rag_engine as re
 
-JMIN_DEFAULT = re.J_DISP_MIN
+DEFAULT_JMIN = re.J_DISP_MIN
+JMIN_DEFAULT = DEFAULT_JMIN
+SORT_OPTIONS = ["Best evidence", "Semantic"]
 
 
 def qp_get(k: str, d=None):
@@ -27,10 +30,10 @@ def init_state():
     ss.setdefault("adv", False)
     ss.setdefault("mode", "quick")
     ss.setdefault("pubs", ["OReilly", "Manning", "Pearson"])
-    ss.setdefault("srt", "Best evidence")
+    ss.setdefault("srt", SORT_OPTIONS[0])
     ss.setdefault("nm", True)           # show near-miss when ok=True
     ss.setdefault("nm_skip", False)     # skip near-miss computation to save cost
-    ss.setdefault("jmin", JMIN_DEFAULT)  # display min judge01
+    ss.setdefault("jmin", DEFAULT_JMIN)  # display min judge01
     ss.setdefault("judge_mode", "real")  # judge mode: real / proxy / off
     if "jdg_mode" in ss:
         ss.setdefault("judge_mode", ss.get("jdg_mode"))
@@ -40,6 +43,7 @@ def init_state():
     ss.setdefault("pins", [])           # list[dict]
     ss.setdefault("clip", "")
     ss.setdefault("act_hit", None)      # active hit for context panel
+    ss.setdefault("q_history", [])
 
     ss.setdefault("_toast", None)
     ss.setdefault("_toast_last", None)
@@ -225,6 +229,12 @@ def render_hero():
     )
 
 
+def _apply_query_prefill(val: str):
+    if not val:
+        return
+    st.session_state["q_inp"] = val
+
+
 def sidebar(eng=None, startup_report=None, mount=None):
     ss = st.session_state
     host = mount or st.sidebar
@@ -233,32 +243,86 @@ def sidebar(eng=None, startup_report=None, mount=None):
         st.markdown("<div class='rail'>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Query</div>", unsafe_allow_html=True)
         with st.form("q_form", clear_on_submit=False):
-            st.text_input(
-                "Search books",
-                key="q_inp",
-                placeholder="Search the books library…",
-                label_visibility="collapsed",
-                help="Press Enter to submit your query.",
+            icon, field = st.columns([0.14, 0.86])
+            with icon:
+                st.markdown(
+                    "<div style='margin-top:10px; text-align:center; color: var(--muted-2); font-size:1.1rem;'>"
+                    "<i class='ph ph-magnifying-glass'></i>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+            with field:
+                st.text_input(
+                    "Search books",
+                    key="q_inp",
+                    placeholder="Search the books library…",
+                    label_visibility="collapsed",
+                    help="Press Enter or click Search to submit. Press / or Ctrl+K to focus.",
+                )
+            submitted = st.form_submit_button(
+                "Search",
+                use_container_width=True,
+                type="primary",
+                help="Submit the search (Enter works too).",
             )
-            st.selectbox(
-                "Suggestions",
-                options=[
-                    "",
-                    "What is retrieval-augmented generation?",
-                    "How do I chunk text for better recall?",
-                    "Compare vector search vs keyword search in this corpus.",
-                ],
-                format_func=lambda v: "Try a suggested query (optional)" if v == "" else v,
-                index=0,
-                key="q_suggestion",
-                help="Optional: prefill the search box with an example question.",
-                label_visibility="collapsed",
-            )
-            suggestion = ss.get("q_suggestion")
-            if suggestion:
-                ss["q_inp"] = suggestion
-                ss["q_suggestion"] = ""
-            submitted = st.form_submit_button("Search", use_container_width=True)
+
+        st.caption("Suggestions")
+        suggestions = [
+            "What is retrieval-augmented generation?",
+            "How do I chunk text for better recall?",
+            "Compare vector search vs keyword search in this corpus.",
+        ]
+        sug_cols = st.columns(len(suggestions))
+        for i, sug in enumerate(suggestions):
+            with sug_cols[i]:
+                if st.button(sug, key=f"q_suggestion_{i}", use_container_width=True):
+                    _apply_query_prefill(sug)
+
+        if ss.get("q_history"):
+            st.caption("Recent searches")
+            hist = ss.get("q_history", [])
+            cols = st.columns(min(len(hist), 3))
+            for i, val in enumerate(hist[:3]):
+                with cols[i % len(cols)]:
+                    if st.button(val, key=f"q_history_{i}", use_container_width=True):
+                        _apply_query_prefill(val)
+
+        components.html(
+            """
+<script>
+(function(){
+  const doc = window.parent.document;
+  function focusSearch() {
+    const el = doc.querySelector('input[aria-label="Search books"]');
+    if (el) { el.focus(); el.select(); }
+  }
+  function submitForm() {
+    const btn = Array.from(doc.querySelectorAll('button')).find(
+      (b) => b.innerText.trim() === 'Search'
+    );
+    if (btn) { btn.click(); }
+  }
+  doc.addEventListener('keydown', function(ev){
+    const tag = ev.target && ev.target.tagName ? ev.target.tagName.toLowerCase() : '';
+    const typing = ['input', 'textarea'].includes(tag);
+    if (!typing && ev.key === '/' && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+      ev.preventDefault();
+      focusSearch();
+    }
+    if (ev.key.toLowerCase() === 'k' && ev.ctrlKey) {
+      ev.preventDefault();
+      focusSearch();
+    }
+    if (ev.key === 'Enter' && ev.ctrlKey) {
+      ev.preventDefault();
+      submitForm();
+    }
+  }, {passive:false});
+})();
+</script>
+""",
+            height=0,
+        )
 
         st.markdown("<div class='section-title'>Publishers</div>", unsafe_allow_html=True)
         ss["pubs"] = st.multiselect(
@@ -272,8 +336,22 @@ def sidebar(eng=None, startup_report=None, mount=None):
         mode_selector()
         st.caption("Fast vs depth presets.")
 
+        st.markdown("<div class='section-title'>Sort</div>", unsafe_allow_html=True)
+        try:
+            srt_idx = SORT_OPTIONS.index(ss.get("srt", SORT_OPTIONS[0]))
+        except ValueError:
+            srt_idx = 0
+        ss["srt"] = st.selectbox(
+            "Sort order",
+            SORT_OPTIONS,
+            index=srt_idx,
+            key="srt",
+            help="Best evidence favors citations; Semantic favors embedding similarity.",
+            label_visibility="collapsed",
+        )
+
         st.markdown("<div class='section-title'>Advanced options</div>", unsafe_allow_html=True)
-        with st.expander("Advanced options", expanded=False):
+        with st.expander("Judge & near-miss controls", expanded=False):
             st.toggle(
                 "Near-miss",
                 key="nm",
@@ -294,25 +372,11 @@ def sidebar(eng=None, startup_report=None, mount=None):
                 help="proxy = score-based, real = cross-encoder (CPU), off = bypass (for debugging only).",
                 key="judge_mode",
             )
-            st.caption("Sorting and thresholds")
-            srt_opts = ["Best evidence", "Semantic"]
-            try:
-                srt_idx = srt_opts.index(ss.get("srt", srt_opts[0]))
-            except ValueError:
-                srt_idx = 0
-            ss["srt"] = st.selectbox(
-                "Sort order",
-                srt_opts,
-                index=srt_idx,
-                key="srt",
-                help="Best evidence favors citations; Semantic favors embedding similarity.",
-                label_visibility="collapsed",
-            )
             ss["jmin"] = st.slider(
                 "Min judge01 (display)",
                 0.0,
                 0.95,
-                float(ss.get("jmin", JMIN_DEFAULT)),
+                float(ss.get("jmin", DEFAULT_JMIN)),
                 0.05,
                 help="Hide evidence below this judge score while keeping at least a handful of results.",
                 label_visibility="collapsed",

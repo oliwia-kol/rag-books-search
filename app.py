@@ -34,10 +34,10 @@ def _run(eng, q: str):
         pubs=pubs,
         use_jdg=True,
         judge_mode=ss.get("judge_mode", ss.get("jdg_mode", "proxy")),
-        sort=ss.get("srt", "Best evidence"),
+        sort=ss.get("srt", us.SORT_OPTIONS[0]),
         show_nm=bool(ss.get("nm", True)),
         nm=not bool(ss.get("nm_skip", False)),
-        jmin=float(ss.get("jmin", us.JMIN_DEFAULT)),
+        jmin=float(ss.get("jmin", us.DEFAULT_JMIN)),
         mode=ss.get("mode", "quick"),
     )
     ss["res"] = rr
@@ -60,6 +60,11 @@ def _on_search():
     try:
         _run(ss["eng"], q)
         us.qp_set(q=q)
+        hist = ss.get("q_history", [])
+        if q in hist:
+            hist.remove(q)
+        hist.insert(0, q)
+        ss["q_history"] = hist[:5]
     except Exception as e:
         ss["_ui_err"] = us.format_ui_error(None, f"{type(e).__name__}: {e}")
         ss["_ui_err_id"] = None

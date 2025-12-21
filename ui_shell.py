@@ -1,3 +1,5 @@
+import html
+
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -386,22 +388,42 @@ def sidebar(eng=None, startup_report=None, mount=None):
         st.divider()
 
         st.markdown("<div class='section-title'>Pinned</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div class='scroll-area' style='max-height: 220px; overflow-y:auto; padding-right:6px;'>",
+            unsafe_allow_html=True,
+        )
         ps = ss.get("pins", [])
+        if ps:
+            seen = set()
+            deduped = []
+            for p in ps:
+                key = (p.get("cid"), p.get("cidx"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(p)
+            if len(deduped) != len(ps):
+                ss["pins"] = deduped
+                ps = deduped
         if not ps:
             st.caption("Pin evidence cards to keep them here.")
         else:
-            st.markdown(
-                "<div class='scroll-area' style='max-height: 220px; overflow-y:auto; padding-right:6px;'>",
-                unsafe_allow_html=True,
-            )
             for i, p in enumerate(ps):
                 c1, c2 = st.columns([0.82, 0.18])
                 with c1:
-                    st.write(_pin_lbl(p))
+                    st.markdown(
+                        """
+<div class='pin-entry'>
+  <span class='chip muted pin-idx'>#{idx}</span>
+  <span class='pin-label'>{label}</span>
+</div>
+""".format(idx=i + 1, label=html.escape(_pin_lbl(p))),
+                        unsafe_allow_html=True,
+                    )
                 with c2:
                     st.button("Unpin", key=f"unpin_{i}", on_click=_pin_del, args=(i,), help="Unpin")
-            st.markdown("</div>", unsafe_allow_html=True)
-            st.button("Clear pins", key="pins_clear", on_click=pins_clear, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.button("Clear pins", key="pins_clear", on_click=pins_clear, use_container_width=True)
 
         st.markdown("<div class='section-title'>Clipboard</div>", unsafe_allow_html=True)
         st.markdown(

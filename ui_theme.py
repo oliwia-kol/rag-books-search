@@ -226,6 +226,37 @@ html, body {
   box-shadow: var(--shadow-subtle);
 }
 
+.status-gauges {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.gauge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.gauge-label { font-weight: 600; color: var(--muted-2); }
+.gauge-bar {
+  width: 92px;
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.gauge-fill {
+  height: 100%;
+  background: var(--secondary);
+  border-radius: inherit;
+}
+.gauge-fill.accent { background: var(--accent); }
+.gauge-value { font-variant-numeric: tabular-nums; color: var(--text); }
+
 .status-chip {
   display: inline-flex;
   align-items: center;
@@ -402,6 +433,14 @@ select:focus-visible,
   color: var(--text);
   box-shadow: var(--shadow-none);
 }
+
+.pin-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+.pin-entry .pin-label { color: var(--text); font-size: 0.95rem; }
 
 @media (max-width: 1100px) {
   .status-strip { grid-template-columns: 1fr; }

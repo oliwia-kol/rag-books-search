@@ -241,6 +241,19 @@ def _toast(msg: str):
 
 def _pin_add(h: Dict[str, Any]):
     ss = st.session_state
+    existing = ss.get("pins", [])
+    if existing:
+        seen = set()
+        deduped = []
+        for p in existing:
+            key = (p.get("cid"), p.get("cidx"))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(p)
+        if len(deduped) != len(existing):
+            ss["pins"] = deduped
+
     p = {
         "t": _pretty_title(h),
         "sec": _sec_lbl(h),
@@ -349,6 +362,10 @@ def render_status_strip(rr: Dict[str, Any]):
     hits = (rr or {}).get("hits", [])
     pubs_used = meta.get("n", {}).get("uniq_publishers") or len({h.get("publisher") or h.get("corp") for h in hits})
     count = len(hits)
+    cov_counts = _coverage_counts(meta, hits)
+    judge_scores = [_j01(h) for h in hits if _j01(h) > 0]
+    avg_judge = sum(judge_scores) / len(judge_scores) if judge_scores else 0.0
+    duration_ms = int((meta.get("t", {}).get("total", 0) or 0) * 1000)
     coverage = (rr or {}).get("coverage") or "WEAK"
     confidence = float((rr or {}).get("confidence") or 0.0)
     cov_state = _confidence_state(confidence, coverage, meta.get("cov"))
@@ -362,20 +379,55 @@ def render_status_strip(rr: Dict[str, Any]):
     evidence_state = "No indexes available" if meta.get("cap", {}).get("corp_available") is False else (
         "Direct evidence found" if not (rr or {}).get("no_evidence") else "Weak evidence, showing closest matches"
     )
-    meta_line = f"Hits: {count} | Pubs: {pubs_used or 0} | {int(meta.get('t', {}).get('total', 0)*1000)} ms"
+    metrics = "".join(
+        [
+            _badge("muted", f"Hits {count}"),
+            _badge("muted", f"Books {cov_counts.get('books', 0)}"),
+            _badge("muted", f"Avg judge {avg_judge:.2f}"),
+            _badge("muted", f"{duration_ms} ms"),
+        ]
+    )
+    cov_score = cov_state.get("mx") or {
+        "HIGH": 0.95,
+        "DISTRIBUTED": 0.82,
+        "OK": 0.72,
+        "MED": 0.6,
+        "WEAK": 0.35,
+        "LOW": 0.18,
+    }.get(str(coverage).upper(), 0.15)
+    cov_fill = max(10, min(100, int(cov_score * 100)))
+    conf_fill = max(10, min(100, int(confidence * 100)))
     st.markdown(
         """
 <div class="status-strip">
-  <div><span class="status-chip {cls}" title="{tooltip}">{cov}</span></div>
-  <div style="color: var(--text); font-size: 0.96rem;">{state}</div>
-  <div class="status-meta">{meta_line}</div>
+  <div class="status-gauges">
+    <div class="gauge" title="{cov_tip}">
+      <span class="gauge-label">Cov</span>
+      <div class="gauge-bar"><div class="gauge-fill" style="width:{cov_fill}%;"></div></div>
+      <span class="gauge-value">{cov}</span>
+    </div>
+    <div class="gauge" title="{conf_tip}">
+      <span class="gauge-label">Conf</span>
+      <div class="gauge-bar"><div class="gauge-fill accent" style="width:{conf_fill}%;"></div></div>
+      <span class="gauge-value">{conf_val}</span>
+    </div>
+  </div>
+  <div style="color: var(--text); font-size: 0.96rem; display:flex; gap:10px; align-items:center;">
+    <span class="status-chip {cls}" title="{cov_tip}">{cov}</span>
+    <span class="state-text">{state}</span>
+  </div>
+  <div class="status-meta chips">{metrics}</div>
 </div>
 """.format(
             cls=badge_cls,
-            tooltip=html.escape(cov_state["tooltip"]),
+            cov_tip=html.escape(cov_state["tooltip"]),
+            conf_tip=html.escape(f"confidence={confidence:.2f}"),
             cov=coverage,
+            cov_fill=cov_fill,
+            conf_fill=conf_fill,
+            conf_val=f"{confidence:.2f}",
             state=html.escape(evidence_state),
-            meta_line=html.escape(meta_line),
+            metrics=metrics,
         ),
         unsafe_allow_html=True,
     )

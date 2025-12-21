@@ -517,26 +517,28 @@ def render_near_miss(rr: Dict[str, Any], q: str = ""):
         return
     meta_nm = (rr or {}).get("meta", {}).get("meta_nm", {}) or {}
     reason = meta_nm.get("reason") or "Close but below judge/overlap threshold."
-    st.markdown(
-        """
+    with st.expander("Near misses (weak overlap)", expanded=True):
+        st.info(reason)
+        st.caption(f"{len(nm)} near-miss results (overlap/judge threshold {meta_nm.get('threshold', 0):.2f})")
+        st.markdown(
+            """
 <div class="panel" style="margin-top:8px;">
-  <div class="section-title">Near-miss (weak overlap)</div>
   <div style="color: var(--muted); margin-bottom:6px;">These overlap with the query but didn’t meet the evidence threshold.</div>
   <div class="chips">{chips}</div>
 </div>
 """.format(
-            chips="".join(
-                [
-                    _badge("secondary", f"{len(nm)} shown"),
-                    _badge("muted", f"Threshold {meta_nm.get('threshold', 0):.2f}"),
-                    _badge("muted", f"Reason: {reason}"),
-                ]
-            )
-        ),
-        unsafe_allow_html=True,
-    )
-    for i, h in enumerate(nm[:6]):
-        render_card(h, q, i, near_miss=True)
+                chips="".join(
+                    [
+                        _badge("secondary", f"{len(nm)} shown"),
+                        _badge("muted", f"Threshold {meta_nm.get('threshold', 0):.2f}"),
+                        _badge("muted", f"Reason: {reason}"),
+                    ]
+                )
+            ),
+            unsafe_allow_html=True,
+        )
+        for i, h in enumerate(nm[:6]):
+            render_card(h, q, i, near_miss=True)
 
 
 def render_power_panel(rr: Dict[str, Any]):

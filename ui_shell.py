@@ -2,7 +2,7 @@ import streamlit as st
 
 import rag_engine as re
 
-JMIN_DEFAULT = 0.45
+JMIN_DEFAULT = re.J_DISP_MIN
 
 
 def qp_get(k: str, d=None):
@@ -169,13 +169,31 @@ def sidebar(eng=None, startup_report=None, mount=None):
     with host:
         st.markdown("<div class='section-title'>Query</div>", unsafe_allow_html=True)
         with st.form("q_form", clear_on_submit=False):
-            st.text_area(
-                "",
+            st.text_input(
+                "Search books",
                 key="q_inp",
-                placeholder="Ask about the books…",
+                placeholder="Search the books library…",
                 label_visibility="collapsed",
-                height=88,
+                help="Press Enter to submit your query.",
             )
+            st.selectbox(
+                "Suggestions",
+                options=[
+                    "",
+                    "What is retrieval-augmented generation?",
+                    "How do I chunk text for better recall?",
+                    "Compare vector search vs keyword search in this corpus.",
+                ],
+                format_func=lambda v: "Try a suggested query (optional)" if v == "" else v,
+                index=0,
+                key="q_suggestion",
+                help="Optional: prefill the search box with an example question.",
+                label_visibility="collapsed",
+            )
+            suggestion = ss.get("q_suggestion")
+            if suggestion:
+                ss["q_inp"] = suggestion
+                ss["q_suggestion"] = ""
             submitted = st.form_submit_button("Search", use_container_width=True)
 
         st.markdown("<div class='section-title'>Publishers</div>", unsafe_allow_html=True)
@@ -190,28 +208,56 @@ def sidebar(eng=None, startup_report=None, mount=None):
         mode_selector()
         st.caption("Fast vs depth presets.")
 
-        st.markdown("<div class='section-title'>Toggles</div>", unsafe_allow_html=True)
-        st.toggle("Near-miss", key="nm", value=ss.get("nm", True), help="Show weak overlaps when no direct evidence.")
-        st.toggle("Judge (forced ON)", key="_use_jdg_view", value=True, disabled=True, help="Cross-encoder rerank")
-        st.selectbox(
-            "Judge mode",
-            options=["proxy", "real", "off"],
-            index=["proxy", "real", "off"].index(ss.get("judge_mode", "proxy")),
-            help="proxy = score-based, real = cross-encoder (CPU), off = bypass",
-            key="judge_mode",
-        )
-
-        with st.expander("Advanced", expanded=False):
-            st.caption("Sort")
+        st.markdown("<div class='section-title'>Advanced options</div>", unsafe_allow_html=True)
+        with st.expander("Advanced options", expanded=False):
+            st.toggle(
+                "Near-miss",
+                key="nm",
+                value=ss.get("nm", True),
+                help="Show weak overlaps when no direct evidence is available.",
+            )
+            st.toggle(
+                "Judge (forced ON)",
+                key="_use_jdg_view",
+                value=True,
+                disabled=True,
+                help="Cross-encoder rerank stays enabled to keep evidence quality high.",
+            )
+            st.selectbox(
+                "Judge mode",
+                options=["proxy", "real", "off"],
+                index=["proxy", "real", "off"].index(ss.get("judge_mode", "proxy")),
+                help="proxy = score-based, real = cross-encoder (CPU), off = bypass (for debugging only).",
+                key="judge_mode",
+            )
+            st.caption("Sorting and thresholds")
             srt_opts = ["Best evidence", "Semantic"]
             try:
                 srt_idx = srt_opts.index(ss.get("srt", srt_opts[0]))
             except ValueError:
                 srt_idx = 0
-            ss["srt"] = st.selectbox("", srt_opts, index=srt_idx, key="srt", label_visibility="collapsed")
-            st.caption("Min judge01 (display)")
-            ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", JMIN_DEFAULT)), 0.05, label_visibility="collapsed")
-            st.toggle("Skip near-miss computation (faster)", key="nm_skip")
+            ss["srt"] = st.selectbox(
+                "Sort order",
+                srt_opts,
+                index=srt_idx,
+                key="srt",
+                help="Best evidence favors citations; Semantic favors embedding similarity.",
+                label_visibility="collapsed",
+            )
+            ss["jmin"] = st.slider(
+                "Min judge01 (display)",
+                0.0,
+                0.95,
+                float(ss.get("jmin", JMIN_DEFAULT)),
+                0.05,
+                help="Hide evidence below this judge score while keeping at least a handful of results.",
+                label_visibility="collapsed",
+            )
+            st.toggle(
+                "Skip near-miss computation (faster)",
+                key="nm_skip",
+                help="Disable the additional near-miss pass to speed up queries when exact matches are enough.",
+            )
 
         st.divider()
 

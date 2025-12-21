@@ -1519,6 +1519,18 @@ def run_query(
     meta.setdefault("log", {})["judge_mode"] = jdg_mode
 
     try:
+        q_clean = (q or "").strip()
+        if not q_clean:
+            msg = "Query is empty. Please enter a question."
+            err_id = _err_id("empty_query")
+            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id}
+            meta["t"]["total"] = _dt(t_total)
+            meta["flags"]["llm_bypassed"] = True
+            meta["flags"]["llm_used"] = False
+            meta["err_llm"] = None
+            _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q_clean or q or ""))
+            return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)
+
         qs = set([w.lower() for w in re.findall(r"[A-Za-z0-9]+", q) if len(w) >= 3])
         meta_jdg = {"ok": False, "kind": "none"}
 

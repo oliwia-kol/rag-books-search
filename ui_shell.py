@@ -199,7 +199,12 @@ def sidebar(eng=None, startup_report=None, mount=None):
 
         with st.expander("Advanced", expanded=False):
             st.caption("Sort")
-            ss["srt"] = st.selectbox("", ["Best evidence", "Semantic"], index=0, label_visibility="collapsed")
+            srt_opts = ["Best evidence", "Semantic"]
+            try:
+                srt_idx = srt_opts.index(ss.get("srt", srt_opts[0]))
+            except ValueError:
+                srt_idx = 0
+            ss["srt"] = st.selectbox("", srt_opts, index=srt_idx, key="srt", label_visibility="collapsed")
             st.caption("Min judge01 (display)")
             ss["jmin"] = st.slider("", 0.0, 0.95, float(ss.get("jmin", 0.35)), 0.05, label_visibility="collapsed")
             st.toggle("Skip near-miss computation (faster)", key="nm_skip")

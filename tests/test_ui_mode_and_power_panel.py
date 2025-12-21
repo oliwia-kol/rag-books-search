@@ -1,5 +1,5 @@
-import ui_adapter as ua
-import ui_shell as us
+import ui_adapter_custom as ua
+import ui_shell_custom as us
 
 
 class DummyModeStreamlit:

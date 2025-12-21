@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 import streamlit.components.v1 as components
 
-from ui_shell import DEFAULT_JMIN
+from ui_shell_custom import DEFAULT_JMIN
 
 
 SNIPPET_MAX_CHARS = 240

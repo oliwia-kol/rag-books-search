@@ -121,7 +121,7 @@ def _clamp_text(txt: str, char_budget: Optional[int], tok_budget: Optional[int],
     return t, {"char_clamped": char_clamped, "token_clamped": tok_clamped}
 
 CORP = {
-    "O'Reilly": BASE_OUT / "OReilly",
+    "OReilly": BASE_OUT / "OReilly",
     "Manning": BASE_OUT / "Manning",
     "Pearson": BASE_OUT / "Pearson",
 }

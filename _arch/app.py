@@ -1,9 +1,9 @@
 import streamlit as st
 
 import rag_engine as re
-import ui_shell as us
-import ui_adapter as ua
-import ui_theme as ut
+import ui_shell_custom as us
+import ui_adapter_custom as ua
+import ui_theme_custom as ut
 
 
 st.set_page_config(page_title="RAG Books Search", layout="wide")

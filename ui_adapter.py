@@ -354,6 +354,14 @@ def render_answer(rr: Dict[str, Any]):
 def render_context_panel():
     ss = st.session_state
     h = ss.get("act_hit")
+    rr = ss.get("res") or {}
+    if h and rr:
+        hits = rr.get("hits") or []
+        if not any(_cid(h) == _cid(x) and _cidx(h) == _cidx(x) for x in hits):
+            h = None
+            ss["act_hit"] = None
+            ss["_scroll_ctx"] = False
+            ss["_ctx_ts"] = None
     with st.container():
         st.markdown('<div id="ctx_panel"></div>', unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Details</div>", unsafe_allow_html=True)

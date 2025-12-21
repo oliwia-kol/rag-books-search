@@ -77,8 +77,8 @@ def main():
             ss["q_inp"] = q0
         ss["_qp_loaded"] = True
 
-    us.topbar()
-    ut.apply_theme(ss.get("theme_mode", "light"))
+    theme_mode = us.topbar()
+    ut.apply_theme(theme_mode)
     left, main_col, detail = st.columns([0.3, 0.46, 0.24], gap="large")
 
     submitted = us.sidebar(ss["eng"], startup_report=ss.get("startup_report"), mount=left)

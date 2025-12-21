@@ -159,6 +159,8 @@ def topbar():
         with c2:
             st.checkbox("Debug", key="show_debug", help="Show timings & capabilities")
 
+    return ss.get("theme_mode", "light")
+
 
 def sidebar(eng=None, startup_report=None, mount=None):
     ss = st.session_state

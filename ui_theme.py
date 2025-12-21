@@ -19,15 +19,16 @@ THEME_TOKENS = {
 }
 
 
-def _apply_mode_flag(mode: str):
+def _apply_mode_flag(mode: str | None):
     """Set a data-theme attribute on the root document for CSS scoping."""
-    st.session_state["theme_mode"] = mode
+    resolved = mode or st.session_state.get("theme_mode", "light")
+    st.session_state["theme_mode"] = resolved
     st.markdown(
         f"""
 <script>
 try {{
   const root = window.parent.document.documentElement;
-  root.setAttribute('data-theme', '{mode}');
+  root.setAttribute('data-theme', '{resolved}');
 }} catch (e) {{}}
 </script>
 """,
@@ -42,8 +43,8 @@ def apply_theme(mode: str | None = None):
         mode: optional theme mode ("light" or "dark"). Falls back to session state.
     """
 
-    mode = mode or st.session_state.get("theme_mode", "light")
-    _apply_mode_flag(mode)
+    resolved_mode = mode or st.session_state.get("theme_mode", "light")
+    _apply_mode_flag(resolved_mode)
 
     css = r"""
 <style>
@@ -75,25 +76,25 @@ def apply_theme(mode: str | None = None):
 }
 
 [data-theme="dark"] {
-  --bg: #0f1116;
-  --surface: #151924;
-  --surface-2: #0d1018;
-  --text: #f3f4f7;
-  --muted: #c1c4cc;
-  --muted-2: #9da3af;
-  --border: #1f2430;
-  --border-strong: #2d3445;
-  --primary: #6ea8ff;
-  --primary-soft: rgba(110, 168, 255, 0.16);
-  --secondary: #f0a15a;
-  --secondary-soft: rgba(240, 161, 90, 0.18);
-  --success: #6ccf9a;
-  --success-soft: rgba(108, 207, 154, 0.18);
-  --warning: #f0bf68;
-  --warning-soft: rgba(240, 191, 104, 0.18);
-  --danger: #f18b8b;
-  --danger-soft: rgba(241, 139, 139, 0.2);
-  --shadow-subtle: 0 14px 34px rgba(0,0,0,0.35);
+  --bg: #0b0e14;
+  --surface: #121826;
+  --surface-2: #0d1320;
+  --text: #f7f8fb;
+  --muted: #d4d8e2;
+  --muted-2: #aeb5c5;
+  --border: #1e2635;
+  --border-strong: #2b3547;
+  --primary: #8ab6ff;
+  --primary-soft: rgba(138, 182, 255, 0.18);
+  --secondary: #f3b26b;
+  --secondary-soft: rgba(243, 178, 107, 0.2);
+  --success: #7ad9a6;
+  --success-soft: rgba(122, 217, 166, 0.2);
+  --warning: #f3c36f;
+  --warning-soft: rgba(243, 195, 111, 0.22);
+  --danger: #f59a9a;
+  --danger-soft: rgba(245, 154, 154, 0.22);
+  --shadow-subtle: 0 14px 34px rgba(0,0,0,0.4);
 }
 
 html, body {
@@ -244,6 +245,18 @@ html, body {
 .skeleton { height: 110px; border-radius: var(--radius-card); background: linear-gradient(90deg, rgba(0,0,0,0.03), rgba(0,0,0,0.08), rgba(0,0,0,0.03)); animation: pulse 1.2s ease-in-out infinite; border: 1px solid var(--border); }
 @keyframes pulse { 0% { background-position: 0% 50%; } 100% { background-position: 100% 50%; } }
 
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+.st-key-command:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--primary-soft);
+  transition: box-shadow 0.12s ease, outline 0.12s ease;
+}
+
 @media (max-width: 1100px) {
   .status-strip { grid-template-columns: 1fr; }
   .status-meta { justify-content: flex-start; }
@@ -258,4 +271,3 @@ html, body {
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
-

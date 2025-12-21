@@ -197,3 +197,49 @@ def test_evidence_list_lazy_loads_batches(monkeypatch):
     ua.render_evidence_list({"hits": hits}, q="python")
     cards_after = sum(1 for c in dummy.calls if c[0] == "markdown" and "evidence-card" in c[1])
     assert cards_after == min(len(hits), ua.EVIDENCE_BATCH_SIZE * 2)
+
+
+def test_evidence_list_batches_multiple_loads(monkeypatch):
+    dummy = DummyEvidenceStreamlit()
+    monkeypatch.setattr(ua, "st", dummy)
+    monkeypatch.setattr(us, "st", dummy)
+    us.init_state()
+
+    hits = [
+        {"cid": f"cid-{i}", "cidx": 0, "text": f"Hit {i}", "judge01": 0.9 - 0.01 * i}
+        for i in range(20)
+    ]
+
+    # first render
+    ua.render_evidence_list({"hits": hits}, q="python")
+    assert dummy.session_state["ev_offset"] == 0
+
+    # first load more
+    dummy.load_more_pressed = True
+    dummy.calls.clear()
+    ua.render_evidence_list({"hits": hits}, q="python")
+    assert dummy.session_state["ev_offset"] == ua.EVIDENCE_BATCH_SIZE
+
+    # second load more
+    dummy.load_more_pressed = False
+    dummy.calls.clear()
+    ua.render_evidence_list({"hits": hits}, q="python")
+    assert dummy.session_state["ev_offset"] == ua.EVIDENCE_BATCH_SIZE
+    dummy.load_more_pressed = True
+    dummy.calls.clear()
+    ua.render_evidence_list({"hits": hits}, q="python")
+    assert dummy.session_state["ev_offset"] == ua.EVIDENCE_BATCH_SIZE * 2
+
+
+def test_no_results_renders_suggestions(monkeypatch):
+    dummy = DummyEvidenceStreamlit()
+    monkeypatch.setattr(ua, "st", dummy)
+    ua.render_evidence_list({"hits": []}, q="python")
+    assert any("No evidence yet" in c[1] for c in dummy.calls if c[0] == "markdown")
+
+
+def test_badge_tiering_labels():
+    assert ua._judge_tier(0.9) == ("Strong", "success")
+    assert ua._judge_tier(0.7) == ("Solid", "primary")
+    assert ua._judge_tier(0.45) == ("Weak", "warning")
+    assert ua._judge_tier(0.1) == ("Poor", "neutral")

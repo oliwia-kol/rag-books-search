@@ -49,6 +49,7 @@ _LOGGER_CONFIGURED = False
 LOG_PATH = Path(os.environ.get("RAG_LOG_PATH", ROOT / "logs" / "query.log"))
 LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 1_000_000))
 LOG_BACKUP_COUNT = int(os.environ.get("RAG_LOG_BACKUP_COUNT", 3))
+RECENT_QUERY_LOG = Path(os.environ.get("RAG_RECENT_QUERY_LOG", LOG_PATH.parent / "recent_queries.json"))
 
 CTX_CLAMP_MARKER = "... [ctx-clamped]"
 LLM_CLAMP_MARKER = "... [llm-clamped]"
@@ -1454,6 +1455,59 @@ def _log_event(meta, mode, pubs_requested, qlen, hits=None):
         pass
 
 
+def _record_recent_query(q: str, pubs: List[str] | None = None, limit: int = 12):
+    q = (q or "").strip()
+    if not q:
+        return
+    try:
+        RECENT_QUERY_LOG.parent.mkdir(parents=True, exist_ok=True)
+        recs = []
+        if RECENT_QUERY_LOG.exists():
+            try:
+                with RECENT_QUERY_LOG.open("r", encoding="utf-8") as f:
+                    recs = json.load(f) or []
+            except Exception:
+                recs = []
+        pubs_norm = sorted(set(pubs or []))
+        now = time.time()
+        recs.append({"q": q, "ts": now, "pubs": pubs_norm})
+        # dedupe by query text, keep most recent first
+        seen = set()
+        deduped = []
+        for r in sorted(recs, key=lambda x: float(x.get("ts", 0.0)), reverse=True):
+            key = (r.get("q") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append({"q": key, "ts": float(r.get("ts", now)), "pubs": r.get("pubs", [])})
+            if len(deduped) >= limit:
+                break
+        with RECENT_QUERY_LOG.open("w", encoding="utf-8") as f:
+            json.dump(deduped, f)
+    except Exception:
+        pass
+
+
+def get_recent_queries(limit: int = 5) -> List[str]:
+    try:
+        if not RECENT_QUERY_LOG.exists():
+            return []
+        with RECENT_QUERY_LOG.open("r", encoding="utf-8") as f:
+            recs = json.load(f) or []
+        recs = sorted(recs, key=lambda x: float((x or {}).get("ts", 0.0)), reverse=True)
+        out = []
+        for r in recs:
+            q = (r or {}).get("q")
+            if not q:
+                continue
+            out.append(str(q))
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        return []
+
+
 def run_query(
     e: Eng,
     q: str,
@@ -1523,7 +1577,7 @@ def run_query(
         if not q_clean:
             msg = "Query is empty. Please enter a question."
             err_id = _err_id("empty_query")
-            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id}
+            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id, "error_id": err_id}
             meta["t"]["total"] = _dt(t_total)
             meta["flags"]["llm_bypassed"] = True
             meta["flags"]["llm_used"] = False
@@ -1544,6 +1598,7 @@ def run_query(
                 "where": "run_query",
                 "msg": msg,
                 "id": err_id,
+                "error_id": err_id,
                 "missing": missing_corpora,
             }
             meta["t"]["total"] = _dt(t_total)
@@ -1556,7 +1611,7 @@ def run_query(
         if not getattr(e, "corp", None) or (not getattr(e, "ix", None) and not getattr(e, "dbp", None)):
             msg = "No corpus indexes available. Add .data/ or data/ indexes, or set RAG_DATA_ROOT."
             err_id = _err_id("no_corpus_indexes")
-            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id}
+            meta["err"] = {"where": "run_query", "msg": msg, "id": err_id, "error_id": err_id}
             meta["t"]["total"] = _dt(t_total)
             meta["flags"]["llm_bypassed"] = True
             meta["flags"]["llm_used"] = False
@@ -1571,6 +1626,8 @@ def run_query(
                 ans=msg,
                 meta=meta,
             )
+
+        _record_recent_query(q_clean, pubs=pubs_requested)
 
         # embed
         t_emb = _t0()
@@ -1774,7 +1831,8 @@ def run_query(
                     meta["flags"]["llm_bypassed"] = True
                     msg = _safe_msg(ex)
                     meta["err_llm"] = msg
-                    meta["err"] = {"where": "llm_call", "msg": msg, "id": _err_id(msg)}
+                    err_id = _err_id(msg)
+                    meta["err"] = {"where": "llm_call", "msg": msg, "id": err_id, "error_id": err_id}
             else:
                 meta["flags"]["llm_bypassed"] = True
                 meta["err_llm"] = None
@@ -1812,7 +1870,8 @@ def run_query(
         return _mk_ret(ok=True, no_ev=True, hits=_pub_hits(hs3), nm_hits=_pub_hits(nm_hits), cov=cov, ans="", meta=meta)
     except Exception as ex:
         msg = _safe_msg(ex)
-        meta["err"] = {"where": "run_query", "msg": msg, "id": _err_id(msg)}
+        err_id = _err_id(msg)
+        meta["err"] = {"where": "run_query", "msg": msg, "id": err_id, "error_id": err_id}
         meta["t"]["total"] = _dt(t_total)
         _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)

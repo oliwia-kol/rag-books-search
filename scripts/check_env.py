@@ -11,12 +11,27 @@ from __future__ import annotations
 import json
 import platform
 import sys
+import os
 from pathlib import Path
 from typing import Dict, List
 
 import importlib
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_data_root() -> Path:
+    env_data_root = os.environ.get("RAG_DATA_ROOT")
+    if env_data_root:
+        try:
+            return Path(env_data_root).expanduser()
+        except Exception:
+            pass
+    hidden = ROOT / ".data"
+    visible = ROOT / "data"
+    if hidden.exists():
+        return hidden
+    return visible
 
 
 REQUIRED_MODULES = [
@@ -64,7 +79,8 @@ def _check_deps(res: CheckResult):
 
 
 def _check_data(res: CheckResult):
-    data_root = ROOT / "data"
+    data_root = _resolve_data_root()
+    res.info.append(f"Data root: {data_root}")
     for corp, files in DATA_LAYOUT.items():
         corp_path = data_root / corp
         status = {"exists": corp_path.exists()}

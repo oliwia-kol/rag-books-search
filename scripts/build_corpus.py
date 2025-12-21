@@ -26,7 +26,23 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "data"
+
+
+def _resolve_data_root() -> Path:
+    env_data_root = os.environ.get("RAG_DATA_ROOT")
+    if env_data_root:
+        try:
+            return Path(env_data_root).expanduser()
+        except Exception:
+            pass
+    hidden = ROOT / ".data"
+    visible = ROOT / "data"
+    if hidden.exists():
+        return hidden
+    return visible
+
+
+DEFAULT_OUT = _resolve_data_root()
 DEFAULT_SRC = ROOT / "raw"
 DEFAULT_PUBS = ["OReilly", "Manning", "Pearson"]
 

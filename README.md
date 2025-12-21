@@ -18,10 +18,10 @@ Then open http://localhost:8501.
 
 ## Data layout (required corpora)
 
-Place CPU-friendly indexes under `data/` using the same structure for each publisher:
+Place CPU-friendly indexes under `.data/` (preferred for keeping artifacts out of sight) or `data/` using the same structure for each publisher. You can also override the location with `RAG_DATA_ROOT`.
 
 ```
-data/
+.data/
 ├── OReilly/
 │   ├── index.faiss
 │   ├── meta.sqlite

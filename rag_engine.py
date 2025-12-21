@@ -26,7 +26,23 @@ from sentence_transformers import CrossEncoder
 # Paths (repo-local)
 # -----------------------------
 ROOT = Path(__file__).parent
-BASE_OUT = ROOT / "data"
+
+
+def _resolve_data_root() -> Path:
+    env_data_root = os.environ.get("RAG_DATA_ROOT")
+    if env_data_root:
+        try:
+            return Path(env_data_root).expanduser()
+        except Exception:
+            pass
+    hidden = ROOT / ".data"
+    visible = ROOT / "data"
+    if hidden.exists():
+        return hidden
+    return visible
+
+
+BASE_OUT = _resolve_data_root()
 
 logger = logging.getLogger(__name__)
 _LOGGER_CONFIGURED = False
@@ -1517,7 +1533,7 @@ def run_query(
                 hits=[],
                 nm_hits=[],
                 cov="WEAK",
-                ans="No corpus indexes available. Add data/ or configure paths.",
+                ans="No corpus indexes available. Add .data/ or data/ indexes, or set RAG_DATA_ROOT.",
                 meta=meta,
             )
 

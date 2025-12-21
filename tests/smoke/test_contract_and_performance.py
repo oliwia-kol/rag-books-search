@@ -21,13 +21,13 @@ def test_smoke_ui_contract_runs(monkeypatch):
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(not Path("data").exists(), reason="corpus data missing; perf check is optional")
+@pytest.mark.skipif(not re.BASE_OUT.exists(), reason="corpus data missing; perf check is optional")
 def test_latency_sanity_with_stubbed_retrieval(monkeypatch):
     eng = re.Eng(
         emb=None,
         ix={"Test": object()},
         dbp={"Test": object()},
-        corp={"Test": Path("data/Test")},
+        corp={"Test": re.BASE_OUT / "Test"},
         ix_dim={"Test": 4},
         corp_report={},
     )

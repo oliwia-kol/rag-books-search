@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 import streamlit.components.v1 as components
 
+import ui_feedback
 from ui_shell_custom import DEFAULT_JMIN
 
 
@@ -508,6 +509,25 @@ def render_answer(rr: Dict[str, Any]):
         ),
         unsafe_allow_html=True,
     )
+    feedback_key = hashlib.md5(ans.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
+    with st.container():
+        up_col, down_col, _ = st.columns([0.1, 0.1, 0.8])
+        with up_col:
+            st.button(
+                "👍",
+                key=f"ans_up_{feedback_key}",
+                on_click=ui_feedback.record_feedback,
+                args=(st.session_state.get("last_q", ""), ans, True),
+                help="Helpful",
+            )
+        with down_col:
+            st.button(
+                "👎",
+                key=f"ans_down_{feedback_key}",
+                on_click=ui_feedback.record_feedback,
+                args=(st.session_state.get("last_q", ""), ans, False),
+                help="Not helpful",
+            )
 
 
 def render_context_panel():

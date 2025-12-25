@@ -1875,3 +1875,36 @@ def run_query(
         meta["t"]["total"] = _dt(t_total)
         _log_event(meta, mode_name, pubs or list(getattr(e, "corp", {}).keys()), len(q))
         return _mk_ret(ok=False, no_ev=True, hits=[], nm_hits=[], cov="WEAK", ans="", meta=meta)
+
+
+# ---------------------------------------------------------------------------
+# Chat answer composition
+# ---------------------------------------------------------------------------
+
+def generate_answer(query: str, hits: list, answer: str | None = None) -> str:
+    """
+    Summarise search hits into a natural language reply for the chat.
+
+    Args:
+        query: Original user question.
+        hits: List of search result dictionaries returned by ``run_query``.
+        answer: Optional answer string already produced by the engine.
+
+    Returns:
+        A human-friendly answer.  If ``answer`` is supplied, it is returned
+        directly.  Otherwise a simple listing of the top three hit titles and
+        sections is returned as a placeholder.
+    """
+    # Use existing answer if provided
+    if answer:
+        return answer
+    # Fallback: build a simple summary from top hits
+    if not hits:
+        return "No relevant passages found."
+    snippets = []
+    for h in hits[:3]:
+        title = h.get("book_title_pretty") or h.get("book_title") or h.get("file") or "Unknown book"
+        section = h.get("section") or h.get("sec") or ""
+        part = f"{title} – {section}" if section else title
+        snippets.append(part)
+    return "Sources: " + "; ".join(snippets)

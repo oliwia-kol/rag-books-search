@@ -16,6 +16,37 @@ streamlit run app.py
 
 Then open http://localhost:8501.
 
+## Chat mode (app_custom.py)
+
+The custom UI includes a chat panel above the main answer/evidence area. It
+uses the same RAG retrieval engine and a stubbed answer composer, so it runs on
+CPU-only (no GPU/CUDA required).
+
+How to use:
+
+1. Start the custom app: `streamlit run app_custom.py`
+2. Type a question in the chat input and press Enter.
+3. The assistant replies with an answer or a short summary of sources.
+
+The chat history is stored in `st.session_state`, so it persists across
+Streamlit reruns during the session.
+
+### Requirements
+
+- Python 3.10+ (same as the rest of the app)
+- Streamlit (installed via `requirements.txt`)
+- CPU-only environment (FAISS + sqlite + CrossEncoder judge)
+
+### Local install & run (custom UI)
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+streamlit run app_custom.py
+```
+
 ## Data layout (required corpora)
 
 Place CPU-friendly indexes under `.data/` (preferred for keeping artifacts out of sight) or `data/` using the same structure for each publisher. You can also override the location with `RAG_DATA_ROOT`.

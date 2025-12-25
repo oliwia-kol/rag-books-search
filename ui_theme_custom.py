@@ -69,6 +69,15 @@ def apply_theme(mode: str | None = None) -> None:
   --warning-soft: rgba(243, 195, 111, 0.22);
   --danger: #f59a9a;
   --danger-soft: rgba(245, 154, 154, 0.22);
+
+  /* Additional accent gradients for future customization (e.g., golden and cyan variants).
+     These variables allow UI designers to switch between accent colour schemes
+     without editing multiple CSS rules.  They are unused initially but can be
+     referenced in components (e.g. for chat bubbles or highlight borders). */
+  --gradient-accent-gold: linear-gradient(120deg, #ffd28e, #f3b26b, #e89c5d);
+  --gradient-accent-cyan: linear-gradient(120deg, #80ffd1, #52e3c2, #29d1b1);
+  --accent-gold: #f3b26b;
+  --accent-cyan: #29d1b1;
   /* Radii */
   --radius-card: 12px;
   --radius-input: 10px;

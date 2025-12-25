@@ -26,6 +26,7 @@ import rag_engine as re
 import ui_shell_custom as us
 import ui_adapter_custom as ua
 import ui_theme_custom as ut
+import ui_chat_custom as uc
 
 
 # Configure the Streamlit page.  Wide layout gives us more horizontal
@@ -133,8 +134,9 @@ def main() -> None:
     three primary columns: sidebar, main content and context panel.  The
     dark theme is applied unconditionally via ``ui_theme_custom.apply_theme``.
     """
-    # Initialise session state defaults
+    # Initialise session state defaults and chat state
     us.init_state()
+    uc.init_chat_state()
     ss = st.session_state
     # Ensure the engine and startup report are loaded only once
     if "eng" not in ss:
@@ -164,6 +166,8 @@ def main() -> None:
     us.toast_flush()
     # Main column: mode display, error box, hero or evidence list
     with main_col:
+        # render chat interface at the top of the main column
+        uc.render_chat(ss["eng"])
         mode_cfg = re.get_mode_cfg(ss.get("mode", "quick"))
         st.markdown(
             f"<div class='section-title'>Mode</div><div class='chip muted'>{mode_cfg.get('label', 'Quick')}</div>",

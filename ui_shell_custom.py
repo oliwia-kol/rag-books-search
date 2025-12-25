@@ -250,6 +250,8 @@ def topbar() -> None:
     <span class="pill"><i class="ph ph-compass"></i> Explore</span>
     <span class="pill"><i class="ph ph-stack-simple"></i> Context</span>
     <span class="pill"><i class="ph ph-sparkle"></i> Judge on</span>
+    <span class="pill"><i class="ph ph-chat-teardrop-text"></i> Chat</span>
+    <span class="pill"><i class="ph ph-gear"></i> Settings</span>
   </div>
 </div>
 """,

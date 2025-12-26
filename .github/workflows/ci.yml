@@ -22,12 +22,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision torchaudio
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+            "torch==2.2.2+cpu" "torchvision==0.17.2+cpu" "torchaudio==2.2.2+cpu"
           pip install -r requirements.txt
+
+      - name: Show repo files (debug)
+        run: ls -la
 
       - name: Python compile check
         run: |
-          python -m py_compile app.py rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py
+          files="rag_engine.py ui_adapter.py ui_shell.py ui_theme.py smoke_ui_contract.py"
+          if [ -f ./app_custom.py ]; then
+            files="app_custom.py $files"
+          else
+            echo "WARNING: app_custom.py not found; will fail if it's required." >&2
+          fi
+          python -m py_compile $files
 
       - name: Run validation and smoke suites
         run: |

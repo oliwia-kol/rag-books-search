@@ -123,11 +123,22 @@ def toast_flush() -> None:
         ss["_toast"] = None
 
 
-def global_error_box() -> None:
+def global_error_box(renderer=None) -> None:
     """Render an error box when a UI-level error is present."""
     ss = st.session_state
     err = ss.get("_ui_err")
     if not err:
+        return
+    error_id = ss.get("_ui_err_id")
+    hint = "If this persists, reload the page and retry the query."
+    if renderer is not None:
+        renderer(
+            {
+                "message": err,
+                "error_id": error_id,
+                "hint": f"{hint} Error IDs help with debugging.",
+            }
+        )
         return
     with st.container(border=True):
         st.error(err)
@@ -138,14 +149,10 @@ def global_error_box() -> None:
                 ss["_ui_err_id"] = None
                 st.rerun()
         with c1:
-            if ss.get("_ui_err_id"):
-                st.caption(
-                    f"If this persists, reload the page and retry the query. Error ID: {ss['_ui_err_id']}"
-                )
+            if error_id:
+                st.caption(f"{hint} Error ID: {error_id}")
             else:
-                st.caption(
-                    "If this persists, reload the page and retry the query. Error IDs help with debugging."
-                )
+                st.caption(f"{hint} Error IDs help with debugging.")
 
 
 def format_ui_error(err_id: Optional[str], msg: Optional[str]) -> str:
@@ -408,13 +415,21 @@ def sidebar(eng=None, startup_report=None, mount=None) -> bool:
         st.divider()
         st.markdown("<div class='section-title'>Filters</div>", unsafe_allow_html=True)
         st.markdown("<div class='section-title'>Publishers</div>", unsafe_allow_html=True)
-        st.multiselect(
-            "Publishers",
-            options=["OReilly", "Manning", "Pearson"],
-            default=ss.get("pubs", []),
-            key="pubs",
-            label_visibility="collapsed",
-        )
+        try:
+            st.multiselect(
+                "Publishers",
+                options=["OReilly", "Manning", "Pearson"],
+                default=ss.get("pubs", []),
+                key="pubs",
+                label_visibility="collapsed",
+            )
+        except TypeError:
+            ss["pubs"] = st.multiselect(
+                "Publishers",
+                options=["OReilly", "Manning", "Pearson"],
+                default=ss.get("pubs", []),
+                label_visibility="collapsed",
+            )
         st.markdown("<div class='section-title'>Mode</div>", unsafe_allow_html=True)
         mode_selector()
         st.caption("Fast vs depth presets.")
@@ -447,16 +462,27 @@ def sidebar(eng=None, startup_report=None, mount=None) -> bool:
                 key="judge_mode",
                 help="proxy = score based, real = cross‑encoder (CPU), off = bypass (for debugging only).",
             )
-            st.slider(
-                "Min judge01 (display)",
-                0.0,
-                0.95,
-                float(ss.get("jmin", DEFAULT_JMIN)),
-                0.05,
-                key="jmin",
-                help="Hide evidence below this judge score while keeping at least a handful of results.",
-                label_visibility="collapsed",
-            )
+            try:
+                st.slider(
+                    "Min judge01 (display)",
+                    0.0,
+                    0.95,
+                    float(ss.get("jmin", DEFAULT_JMIN)),
+                    0.05,
+                    key="jmin",
+                    help="Hide evidence below this judge score while keeping at least a handful of results.",
+                    label_visibility="collapsed",
+                )
+            except TypeError:
+                ss["jmin"] = st.slider(
+                    "Min judge01 (display)",
+                    0.0,
+                    0.95,
+                    float(ss.get("jmin", DEFAULT_JMIN)),
+                    0.05,
+                    help="Hide evidence below this judge score while keeping at least a handful of results.",
+                    label_visibility="collapsed",
+                )
             st.toggle(
                 "Skip near‑miss computation (faster)",
                 key="nm_skip",

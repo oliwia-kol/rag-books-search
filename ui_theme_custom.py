@@ -13,25 +13,25 @@ accessibility.
 import streamlit as st
 
 
-def _apply_mode_flag() -> None:
-    """Set the ``data-theme`` attribute to ``dark`` on the root element.
+def _apply_mode_flag(mode: str) -> None:
+    """Set the ``data-theme`` attribute on the root element.
 
     Streamlit apps run within an iframe; this script reaches up to the
-    parent document to set a data attribute.  We unconditionally set
-    ``data-theme"dark"`` because this custom theme has no light variant.
+    parent document to set a data attribute.  We default to dark but
+    still store the requested mode for compatibility with tests.
     """
-    st.session_state["theme_mode"] = "dark"
+    st.session_state["theme_mode"] = mode
     st.session_state["_theme_signal"] = st.session_state.get("_theme_signal", 0) + 1
     st.markdown(
-        """
-<script>
-try {
-  const root = window.parent.document.documentElement;
-  root.setAttribute('data-theme', 'dark');
-  root.style.colorScheme = 'dark';
-} catch (e) {}
-</script>
-""",
+        (
+            "<script>\n"
+            "try {\n"
+            "  const root = window.parent.document.documentElement;\n"
+            f"  root.setAttribute('data-theme', '{mode}');\n"
+            f"  root.style.colorScheme = '{mode}';\n"
+            "} catch (e) {}\n"
+            "</script>\n"
+        ),
         unsafe_allow_html=True,
     )
 
@@ -39,9 +39,10 @@ try {
 def apply_theme(mode: str | None = None) -> None:
     """Inject the CSS for the dark theme into the Streamlit app.
 
-    The ``mode`` argument is ignored; the dark theme is always used.
+    The ``mode`` argument updates session state for compatibility.
     """
-    _apply_mode_flag()
+    effective_mode = mode or "dark"
+    _apply_mode_flag(effective_mode)
     css = r"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;600&display=swap');

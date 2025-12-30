@@ -12,7 +12,7 @@ state keys are managed carefully to avoid collisions with widget keys.
 Key changes from the stock implementation:
 
 * **Permanent dark mode** – the user can no longer toggle between light
-  and dark themes.  The dark palette defined in ``ui_theme_custom.py``
+  and dark themes.  The dark palette defined in ``ui_theme.py``
   is always applied.
 * **Concise suggestions** – suggestions are rendered as short labels to
   fit comfortably in a single row.  Clicking a suggestion prefills the
@@ -25,7 +25,7 @@ Key changes from the stock implementation:
   keys, allowing Streamlit to manage state updates automatically and
   preventing the ``StreamlitAPIException`` encountered previously.
 
-This file is designed to be imported by ``app_custom.py``.  See that
+This file is designed to be imported by ``app.py``.  See that
 module for how the page is assembled.
 """
 
@@ -161,8 +161,8 @@ def format_ui_error(err_id: Optional[str], msg: Optional[str]) -> str:
     This helper mirrors the behaviour of the upstream ``ui_shell.format_ui_error``
     function.  It prepends an error ID when available and appends
     guidance text instructing the user to retry.  Without this helper,
-    ``app_custom._on_search`` would raise an ``AttributeError`` when
-    reporting exceptions, because ``ui_shell_custom`` previously lacked
+    ``app._on_search`` would raise an ``AttributeError`` when
+    reporting exceptions, because ``ui_shell`` previously lacked
     ``format_ui_error``.
 
     Args:

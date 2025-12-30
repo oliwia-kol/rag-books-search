@@ -12,15 +12,15 @@ over from the original, but several adjustments have been made:
   (Strong/Solid/Weak/Poor) and corresponding J and S scores with
   consistent colouring.
 * ``EVIDENCE_BATCH_SIZE`` defaults to 8 items, but can be adjusted in
-  ``ui_shell_custom.sidebar`` via session state; lazy loading is
+  ``ui_shell.sidebar`` via session state; lazy loading is
   preserved.
 * The status strip exposes additional metrics (average judge score) and
   uses our custom colour scheme via CSS classes defined in
-  ``ui_theme_custom``.
+  ``ui_theme``.
 
-This file should be saved alongside ``app_custom.py``, ``ui_shell_custom.py``
-and ``ui_theme_custom.py``.  To use it, update ``app_custom.py`` to import
-``ui_adapter_custom`` instead of the upstream ``ui_adapter``.
+This file should be saved alongside ``app.py``, ``ui_shell.py``
+and ``ui_theme.py``.  To use it, update ``app.py`` to import
+``ui_adapter`` instead of the upstream ``ui_adapter``.
 
 Note: because this file is essentially a copy of the original with
 incremental changes, we preserve original comments and helper
@@ -37,7 +37,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import ui_feedback
-from ui_shell_custom import DEFAULT_JMIN
+from ui_shell import DEFAULT_JMIN
 
 
 # Maximum characters to extract for a snippet
@@ -396,7 +396,7 @@ def render_status_strip(rr: Dict[str, Any]):
 
     The strip displays coverage and confidence gauges, a summary of
     evidence state, and meta metrics.  Colour coding is driven by the
-    ``cov_state`` and the CSS defined in ``ui_theme_custom``.
+    ``cov_state`` and the CSS defined in ``ui_theme``.
     """
     meta = (rr or {}).get("meta", {})
     hits = (rr or {}).get("hits", [])
@@ -707,7 +707,7 @@ def render_card(h: Dict[str, Any], q: str, i: int, near_miss: bool = False):
     Buttons below the card allow the user to pin the citation, copy a
     formatted snippet or open the full context panel.  The design is
     tuned for our dark theme; additional styling is provided via
-    ``ui_theme_custom``.
+    ``ui_theme``.
     """
     tt = _pretty_title(h)
     pub = _pub(h)

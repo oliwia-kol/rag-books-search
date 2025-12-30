@@ -1,6 +1,6 @@
 import streamlit as st
 
-import ui_theme_custom as ut
+import ui_theme as ut
 
 
 def test_apply_theme_uses_current_session_mode(monkeypatch):

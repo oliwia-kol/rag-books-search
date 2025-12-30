@@ -21,9 +21,9 @@ def _has(m, ns):
 
 
 def main():
-    us = importlib.import_module("ui_shell_custom")
-    ua = importlib.import_module("ui_adapter_custom")
-    ut = importlib.import_module("ui_theme_custom")
+    us = importlib.import_module("ui_shell")
+    ua = importlib.import_module("ui_adapter")
+    ut = importlib.import_module("ui_theme")
     re_mod = importlib.import_module("rag_engine")
 
     _has(us, ["init_state", "sidebar", "global_error_box", "toast_flush", "qp_get", "qp_set", "cb_clear"])

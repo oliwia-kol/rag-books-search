@@ -1,4 +1,4 @@
-import ui_shell_custom as us
+import ui_shell as us
 
 
 class DummySidebarStreamlit:

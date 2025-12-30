@@ -1,4 +1,4 @@
-import ui_adapter_custom as ua
+import ui_adapter as ua
 
 
 class DummyStreamlit:

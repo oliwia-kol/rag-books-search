@@ -1,4 +1,4 @@
-import ui_shell_custom as us
+import ui_shell as us
 
 
 def test_format_ui_error_includes_id_and_hint():

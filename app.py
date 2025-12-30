@@ -10,23 +10,23 @@ improvements:
   default column widths are 25 % (sidebar), 55 % (main results) and
   20 % (context).
 * Dark mode is enforced.  There is no toggle for light mode – the app
-  always uses the dark palette defined in ``ui_theme_custom.py``.
+  always uses the dark palette defined in ``ui_theme.py``.
 * The top bar no longer contains an end‑user dark‑mode toggle.  It still
   exposes a debug checkbox for development purposes.
-* The sidebar UI has been completely reworked in ``ui_shell_custom``.
+* The sidebar UI has been completely reworked in ``ui_shell``.
 
-To run this app you can execute ``streamlit run app_custom.py`` within
+To run this app you can execute ``streamlit run app.py`` within
 your project.  It depends on the modules ``rag_engine``,
-``ui_shell_custom``, ``ui_adapter_custom`` and ``ui_theme_custom``.
+``ui_shell``, ``ui_adapter`` and ``ui_theme``.
 """
 
 import streamlit as st
 
 import rag_engine as re
-import ui_shell_custom as us
-import ui_adapter_custom as ua
-import ui_theme_custom as ut
-import ui_chat_custom as uc
+import ui_shell as us
+import ui_adapter as ua
+import ui_theme as ut
+import ui_chat as uc
 
 
 # Configure the Streamlit page.  Wide layout gives us more horizontal
@@ -51,7 +51,7 @@ def _run(eng, q: str) -> None:
     """Run a query against the retrieval engine and update session state.
 
     This function mirrors the original ``_run`` implementation but takes
-    advantage of the improved state initialisation in ``ui_shell_custom``.
+    advantage of the improved state initialisation in ``ui_shell``.
     It writes the results, errors and timing information into
     ``st.session_state`` so that downstream UI code can display them.
 
@@ -132,7 +132,7 @@ def main() -> None:
 
     Sets up the session state, loads the retrieval engine and renders the
     three primary columns: sidebar, main content and context panel.  The
-    dark theme is applied unconditionally via ``ui_theme_custom.apply_theme``.
+    dark theme is applied unconditionally via ``ui_theme.apply_theme``.
     """
     # Initialise session state defaults and chat state
     us.init_state()

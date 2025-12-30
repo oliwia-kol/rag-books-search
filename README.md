@@ -16,7 +16,7 @@ streamlit run app.py
 
 Then open http://localhost:8501.
 
-## Chat mode (app_custom.py)
+## Chat mode (app.py)
 
 The custom UI includes a chat panel above the main answer/evidence area. It
 uses the same RAG retrieval engine and a stubbed answer composer, so it runs on
@@ -24,7 +24,7 @@ CPU-only (no GPU/CUDA required).
 
 How to use:
 
-1. Start the custom app: `streamlit run app_custom.py`
+1. Start the custom app: `streamlit run app.py`
 2. Type a question in the chat input and press Enter.
 3. The assistant replies with an answer or a short summary of sources.
 
@@ -44,7 +44,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
-streamlit run app_custom.py
+streamlit run app.py
 ```
 
 ## Data layout (required corpora)

@@ -3,10 +3,10 @@ import re as regex
 
 import streamlit as st
 
-import app_custom
+import app
 import rag_engine as re
-import ui_adapter_custom as ua
-import ui_shell_custom as us
+import ui_adapter as ua
+import ui_shell as us
 
 
 class DummyEvidenceStreamlit:
@@ -94,9 +94,9 @@ def test_jmin_default_matches_backend_and_display(monkeypatch):
         captured["jmin"] = kwargs.get("jmin")
         return {"meta": {}}
 
-    monkeypatch.setattr(app_custom.re, "run_query", fake_run_query)
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
 
-    app_custom._run(eng=None, q="hi")
+    app._run(eng=None, q="hi")
 
     assert st.session_state["jmin"] == us.DEFAULT_JMIN
     assert captured["jmin"] == us.DEFAULT_JMIN
@@ -117,13 +117,13 @@ def test_context_resets_on_new_search(monkeypatch):
             return {"hits": hits_first, "meta": {}}
         return {"hits": hits_second, "meta": {}}
 
-    monkeypatch.setattr(app_custom.re, "run_query", fake_run_query)
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
 
-    app_custom._run(eng=None, q="first")
+    app._run(eng=None, q="first")
     ua._ctx_open(hits_first[0])
     assert st.session_state["act_hit"]["cid"] == "cid-1"
 
-    app_custom._run(eng=None, q="second")
+    app._run(eng=None, q="second")
 
     assert st.session_state["act_hit"] is None
     assert st.session_state["_scroll_ctx"] is False
@@ -146,9 +146,9 @@ def test_on_search_resets_selection_before_results(monkeypatch):
         captured["act_hit_before_run"] = st.session_state.get("act_hit")
         return {"hits": [{"cid": "cid-new", "cidx": 0, "text": "New", "judge01": 0.77}], "meta": {}}
 
-    monkeypatch.setattr(app_custom.re, "run_query", fake_run_query)
+    monkeypatch.setattr(app.re, "run_query", fake_run_query)
 
-    app_custom._on_search()
+    app._on_search()
 
     assert captured["act_hit_before_run"] is None
     assert st.session_state["act_hit"] is None

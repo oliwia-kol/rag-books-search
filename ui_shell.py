@@ -91,6 +91,7 @@ def init_state() -> None:
     ss.setdefault("nm_skip", False)
     ss.setdefault("jmin", DEFAULT_JMIN)
     ss.setdefault("judge_mode", "real")
+    ss.setdefault("_adv_open", False)
     # ensure pinned items and clipboard exist
     ss.setdefault("pins", [])
     ss.setdefault("clip", "")
@@ -237,11 +238,7 @@ def mode_selector() -> str:
 
 
 def topbar() -> None:
-    """Render the top navigation bar.
-
-    The bar contains the app name, a few navigation pills and a debug
-    checkbox.  Dark mode is enforced; there is no theme toggle.
-    """
+    """Render the top navigation bar (calm, product-like)."""
     ss = st.session_state
     st.markdown(
         """
@@ -249,35 +246,20 @@ def topbar() -> None:
   <div class="brand">
     <span class="logo"><i class="ph ph-books"></i></span>
     <div class="name">
-      <span class="title">RAG Books Search</span>
-      <span class="muted">Evidence‑first search</span>
+      <span class="title">RAG Books</span>
+      <span class="muted">chat-first research with sources</span>
     </div>
   </div>
-  <div class="icon-nav">
-    <span class="pill"><i class="ph ph-compass"></i> Explore</span>
-    <span class="pill"><i class="ph ph-stack-simple"></i> Context</span>
-    <span class="pill"><i class="ph ph-sparkle"></i> Judge on</span>
-    <span class="pill"><i class="ph ph-chat-teardrop-text"></i> Chat</span>
-    <span class="pill"><i class="ph ph-gear"></i> Settings</span>
+  <div class="topbar-right">
+    <span class="top-hint">/ to focus search • Ctrl+Enter to run</span>
   </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
-    ctrl_left, ctrl_right = st.columns([0.7, 0.3])
-    with ctrl_left:
-        st.markdown(
-            """
-<div class="slim-actions">
-  <span class="btn"><i class="ph ph-magnifying-glass"></i> Search books</span>
-  <span class="btn"><i class="ph ph-bookmarks-simple"></i> Pins</span>
-  <span class="btn"><i class="ph ph-git-branch"></i> Modes</span>
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-    with ctrl_right:
-        st.checkbox("Debug", key="show_debug", help="Show timings & capabilities")
+    st.markdown("<div class='topbar-tools'>", unsafe_allow_html=True)
+    st.checkbox("Debug", key="show_debug", help="Show timings & capabilities")
+    st.markdown("</div>", unsafe_allow_html=True)
     ss["theme_mode"] = "dark"
 
 

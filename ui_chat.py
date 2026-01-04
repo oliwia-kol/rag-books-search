@@ -1,9 +1,8 @@
-# ui_chat.py
 """
 Chat UI component for RAG Books Search.
 
 This module provides functions to render a chat interface in Streamlit and
-generate responses using the retrieval engine. The chat is stateful via st.session_state.
+generate responses using the retrieval engine. The chat is stateful.
 """
 
 from __future__ import annotations
@@ -27,10 +26,8 @@ def _on_chat_submit(engine: Any) -> None:
     user_input = (ss.get("chat_input") or "").strip()
     if not user_input:
         return
-
     ss["chat_history"].append({"role": "user", "content": user_input})
     ss["chat_input"] = ""
-
     try:
         rr = re.run_query(
             engine,
@@ -49,26 +46,35 @@ def _on_chat_submit(engine: Any) -> None:
         assistant_msg = re.generate_answer(user_input, hits, answer)
     except Exception as exc:
         assistant_msg = f"Error: {type(exc).__name__}: {exc}"
-
     ss["chat_history"].append({"role": "assistant", "content": assistant_msg})
 
 
 def render_chat(engine: Any) -> None:
     init_chat_state()
     ss = st.session_state
-
-    st.markdown("<div class='chat'>", unsafe_allow_html=True)
-    for msg in ss.get("chat_history", []):
-        role = (msg or {}).get("role")
-        content = html.escape((msg or {}).get("content", ""))
-        cls = "chat-bubble user" if role == "user" else "chat-bubble asst"
-        st.markdown(f"<div class='{cls}'>{content}</div>", unsafe_allow_html=True)
+    st.markdown("<div class='chat-panel'>", unsafe_allow_html=True)
+    hist = ss.get("chat_history", []) or []
+    for msg in hist[-6:]:
+        role = (msg.get("role") or "assistant").strip().lower()
+        content = html.escape(str(msg.get("content", "")))
+        row = "user" if role == "user" else "assistant"
+        st.markdown(
+            (
+                f"<div class='chat-row {row}'>"
+                f"  <div class='chat-bubble {row}'>"
+                f"    <div class='role'>{'You' if row=='user' else 'Assistant'}</div>"
+                f"    <div>{content}</div>"
+                f"  </div>"
+                f"</div>"
+            ),
+            unsafe_allow_html=True,
+        )
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.text_input(
-        "Message",
+        "Ask a question",
         key="chat_input",
-        placeholder="Ask anything about the books…",
+        placeholder="Type your question and press Enter…",
         on_change=_on_chat_submit,
         args=(engine,),
         label_visibility="collapsed",

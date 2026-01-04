@@ -1,11 +1,10 @@
-# app.py
-"""Streamlit entrypoint for RAG Books Search.
+"""RAG Books Search — Streamlit app entry.
 
-UI NORTH STAR (from LOVEABLE_PROMPT_UI.md): calm, chat-first, evidence as support.
-
-Contract constraints:
-- Must stay compatible with rag_engine.py
-- Must keep ui_shell/ui_adapter/ui_theme APIs (see smoke_ui_contract.py)
+UI goals (LOVEABLE v2):
+- Answer-first, calm, editorial reading experience.
+- Sources and Context as intentional layers (progressive disclosure).
+- No raw metrics in the main view.
+- Debug/diagnostics remain available but never dominate.
 """
 
 from __future__ import annotations
@@ -18,133 +17,132 @@ import ui_chat as uc
 import ui_shell as us
 import ui_theme as ut
 
-
-st.set_page_config(page_title="RAG Books Search", layout="wide")
-
-try:
-    st.set_option("client.showErrorDetails", False)
-except Exception:
-    pass
+APP_TITLE = "RAG Books — chat-first research with sources"
 
 
-@st.cache_resource
+st.set_page_config(
+    page_title="RAG Books",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+
+@st.cache_resource(show_spinner=False)
 def _mk_eng():
     return re._mk_eng()
 
 
-def _run(eng, q: str) -> None:
+def _safe_run(eng, q: str):
+    """Run engine and store rr + q in session state, with defensive error capture."""
     ss = st.session_state
-    pubs = ss.get("pubs", [])
+    q = (q or "").strip()
+    if not q:
+        return None
+
+    # remember history (top, unique)
+    hist = ss.get("q_history", []) or []
+    if q in hist:
+        hist.remove(q)
+    hist.insert(0, q)
+    ss["q_history"] = hist[:20]
 
     ss["_loading"] = True
-    ss["act_hit"] = None
+    ss["_ui_err"] = None
+    ss["_ui_err_id"] = None
     ss["ev_offset"] = 0
-    ss["res"] = None
-    ss["last_q"] = q
+    ss["act_hit"] = None
 
     try:
         rr = re.run_query(
             eng,
             q,
-            pubs=pubs,
+            pubs=ss.get("pubs", []),
             use_jdg=True,
-            judge_mode=ss.get("judge_mode", ss.get("jdg_mode", "proxy")),
-            sort=ss.get("srt", us.SORT_OPTIONS[0]),
+            judge_mode=ss.get("judge_mode", "proxy"),
+            sort=ss.get("srt", "Best evidence"),
             show_nm=bool(ss.get("nm", True)),
             nm=not bool(ss.get("nm_skip", False)),
-            jmin=float(ss.get("jmin", us.DEFAULT_JMIN)),
+            jmin=float(ss.get("jmin", re.J_DISP_MIN)),
             mode=ss.get("mode", "quick"),
         )
-        ss["res"] = rr
-
-        err = (rr or {}).get("meta", {}).get("err")
-        if err:
-            ss["_ui_err"] = us.format_ui_error(err.get("id"), err.get("msg"))
-            ss["_ui_err_id"] = err.get("id")
-        else:
-            ss["_ui_err"] = None
+        ss["rr"] = rr
+        ss["q_last"] = q
+        return rr
+    except Exception as exc:
+        ss["_ui_err"] = f"{type(exc).__name__}: {exc}"
+        # if engine attached an error_id in meta, capture it
+        try:
+            ss["_ui_err_id"] = (locals().get("rr") or {}).get("meta", {}).get("error_id")
+        except Exception:
             ss["_ui_err_id"] = None
+        ss["rr"] = None
+        return None
     finally:
         ss["_loading"] = False
 
 
-def _on_search() -> None:
-    ss = st.session_state
-    q = (ss.get("q_inp") or "").strip()
-    if not q:
-        return
-
-    try:
-        _run(ss["eng"], q)
-        hist = ss.get("q_history", []) or []
-        if q in hist:
-            hist.remove(q)
-        hist.insert(0, q)
-        ss["q_history"] = hist[:8]
-        us.qp_set(q=q)
-    except Exception as e:
-        ss["_ui_err"] = us.format_ui_error(None, f"{type(e).__name__}: {e}")
-        ss["_ui_err_id"] = None
-
-
-def main() -> None:
-    us.init_state()
-    uc.init_chat_state()
-    ss = st.session_state
-
-    if "eng" not in ss:
-        ss["eng"] = _mk_eng()
-    if "startup_report" not in ss:
-        ss["startup_report"] = re.get_startup_report(ss["eng"])
-
-    if "_qp_loaded" not in ss:
-        q0 = us.qp_get("q", "")
-        if q0:
-            ss["q_inp"] = q0
-        ss["_qp_loaded"] = True
-
+def _main():
     ut.apply_theme("dark")
+    us.init_state()
 
-    st.markdown("<div class='app-shell'>", unsafe_allow_html=True)
-    us.topbar()
+    eng = _mk_eng()
+    startup_report = None
+    try:
+        startup_report = getattr(eng, "startup_report", lambda: None)()
+    except Exception:
+        startup_report = None
 
-    submitted = us.sidebar(ss["eng"], startup_report=ss.get("startup_report"))
-    if submitted:
-        _on_search()
+    us.topbar(startup_report=startup_report)
     us.toast_flush()
 
-    # MAIN STAGE
-    st.markdown("<div class='stage'>", unsafe_allow_html=True)
+    # Layout: slim rail + main reading column
+    rail_col, main_col = st.columns([0.28, 0.72], gap="large")
 
-    # Chat is the visual center (even before we ship a full chatbot).
-    uc.render_chat(ss["eng"])
+    with rail_col:
+        submitted = us.sidebar(eng, startup_report=startup_report, mount=st.container())
+        if submitted:
+            _safe_run(eng, st.session_state.get("q_inp", ""))
 
-    us.global_error_box()
+    with main_col:
+        us.global_error_box()
 
-    rr = ss.get("res")
-    if not rr:
-        us.render_hero()
-        st.markdown("</div></div>", unsafe_allow_html=True)
-        return
+        q_last = st.session_state.get("q_last", "") or ""
+        rr = st.session_state.get("rr")
 
-    ua.render_status_strip(rr)
-    ua.render_answer(rr)
+        if not rr:
+            # Hero state
+            us.render_hero()
+            return
 
-    # Progressive disclosure: sources/context live behind tabs.
-    t1, t2, t3 = st.tabs(["Sources", "Context", "Near-miss"])
-    with t1:
-        ua.render_evidence_list(rr, q=ss.get("last_q", ""))
-    with t2:
-        ua.render_context_panel()
-    with t3:
-        ua.render_near_miss(rr, q=ss.get("last_q", ""))
+        # Status + answer (calm, editorial)
+        ua.render_conf(rr)
+        st.markdown("<div style='height:.65rem;'></div>", unsafe_allow_html=True)
+        ua.render_answer(rr)
 
-    # Optional debug (still behind a single toggle).
-    if ss.get("show_debug"):
-        ua.render_power_panel(rr)
+        st.markdown("<div style='height:.85rem;'></div>", unsafe_allow_html=True)
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
+        # Layers: Sources | Context | Near-miss
+        t_sources, t_context, t_near = st.tabs(["Sources", "Context", "Near-miss"])
+
+        with t_sources:
+            ua.render_evidence_list(rr, q=q_last)
+
+        with t_context:
+            ua.render_context_panel()
+
+        with t_near:
+            ua.render_near_miss(rr, q=q_last)
+
+        # Diagnostics: opt-in only
+        if st.session_state.get("show_debug"):
+            with st.expander("Diagnostics (raw)", expanded=False):
+                ua.render_power_panel(rr)
+
+        # Lightweight “future chatbot” panel (kept subtle)
+        with st.expander("Chat (preview)", expanded=False):
+            uc.render_chat(eng)
 
 
 if __name__ == "__main__":
-    main()
+    _main()
